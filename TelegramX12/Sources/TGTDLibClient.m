@@ -268,8 +268,8 @@ static void TGXLogLine(NSString *format, ...) {
         appVersion = @"1.0";
     }
 
-    NSDictionary *parameters = @{
-        @"@type": @"tdlibParameters",
+    NSDictionary *request = @{
+        @"@type": @"setTdlibParameters",
         @"use_test_dc": @NO,
         @"database_directory": databaseDirectory,
         @"files_directory": filesDirectory,
@@ -283,14 +283,7 @@ static void TGXLogLine(NSString *format, ...) {
         @"system_language_code": language,
         @"device_model": [[UIDevice currentDevice] model],
         @"system_version": [[UIDevice currentDevice] systemVersion],
-        @"application_version": appVersion,
-        @"enable_storage_optimizer": @YES,
-        @"ignore_file_names": @NO
-    };
-
-    NSDictionary *request = @{
-        @"@type": @"setTdlibParameters",
-        @"parameters": parameters
+        @"application_version": appVersion
     };
 
     __weak typeof(self) weakSelf = self;
@@ -333,6 +326,12 @@ static void TGXLogLine(NSString *format, ...) {
     }
 
     NSString *json = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    if ([TGStringValue(request[@"@type"]) isEqualToString:@"setTdlibParameters"]) {
+        NSMutableDictionary *redacted = [payload mutableCopy];
+        redacted[@"api_hash"] = @"***";
+        NSData *redactedData = [NSJSONSerialization dataWithJSONObject:redacted options:0 error:NULL];
+        TGXLogLine(@"send: %@", [[NSString alloc] initWithData:redactedData encoding:NSUTF8StringEncoding]);
+    }
     if (json.length == 0) {
         if (completion != nil) {
             [self.completions removeObjectForKey:extra];
