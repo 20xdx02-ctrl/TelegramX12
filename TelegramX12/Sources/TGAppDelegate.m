@@ -20,10 +20,17 @@
 
     self.client = [[TGTDLibClient alloc] init];
     self.client.delegate = self;
-    [self.client start];
-
+    // UIKit must finish attaching the initial controller before TDLib can
+    // deliver a cached authorization state.  On iOS 12 an already-authorized
+    // account can otherwise replace the root controller while launch is still
+    // being processed, which terminates the process with SIGABRT.
     [self showLoginAnimated:NO];
     [self.window makeKeyAndVisible];
+
+    TGTDLibClient *client = self.client;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [client start];
+    });
     return YES;
 }
 
