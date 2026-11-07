@@ -83,6 +83,13 @@
 
 - (void)tgClient:(TGTDLibClient *)client didChangeAuthorizationState:(NSDictionary *)state {
     NSString *type = TGStringValue(state[@"@type"]);
+    NSLog(@"[TGX] app delegate auth state: %@", type);
+    NSString *logPath = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject stringByAppendingPathComponent:@"app.log"];
+    NSString *line = [NSString stringWithFormat:@"%@ delegate auth state: %@\n", [NSDate date], type];
+    NSData *data = [line dataUsingEncoding:NSUTF8StringEncoding];
+    NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:logPath];
+    if (handle == nil) { [data writeToFile:logPath atomically:YES]; }
+    else { [handle seekToEndOfFile]; [handle writeData:data]; [handle closeFile]; }
 
     if ([type isEqualToString:@"authorizationStateReady"]) {
         [self showChatsAnimated:YES];

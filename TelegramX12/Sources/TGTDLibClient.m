@@ -7,6 +7,36 @@
 
 #import "td_json_client.h"
 
+static void TGXLogLine(NSString *format, ...) {
+    va_list args;
+    va_start(args, format);
+    NSString *message = [[NSString alloc] initWithFormat:format arguments:args];
+    va_end(args);
+
+    NSLog(@"[TGX] %@", message);
+
+    NSString *documents = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+    if (documents.length == 0) {
+        return;
+    }
+    NSString *path = [documents stringByAppendingPathComponent:@"app.log"];
+    NSString *line = [NSString stringWithFormat:@"%@ %@\n", [NSDate date], message];
+    NSData *data = [line dataUsingEncoding:NSUTF8StringEncoding];
+    @synchronized (path) {
+        NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:path];
+        if (handle == nil) {
+            [data writeToFile:path atomically:YES];
+        } else {
+            @try {
+                [handle seekToEndOfFile];
+                [handle writeData:data];
+            } @catch (__unused NSException *exception) {
+            }
+            [handle closeFile];
+        }
+    }
+}
+
 @interface TGTDLibClient ()
 
 @property (nonatomic, readwrite, nullable) NSDictionary *authorizationState;
@@ -41,7 +71,16 @@
         return;
     }
     self.started = YES;
+    TGXLogLine(@"start: hasCredentials=%d", [TGConfig hasCredentials]);
+
     self.clientId = td_create_client_id();
+    TGXLogLine(@"td_create_client_id -> %d", self.clientId);
+
+    NSString *documents = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+    NSString *tdlog = [documents stringByAppendingPathComponent:@"tdlib.log"];
+    NSString *setLogRequest = [NSString stringWithFormat:@"{\"@type\":\"setLogStream\",\"log_stream\":{\"@type\":\"logStreamFile\",\"path\":\"%@\",\"max_file_size\":20971520}}", tdlog];
+    td_send(self.clientId, setLogRequest.UTF8String);
+    td_send(self.clientId, "{\"@type\":\"setLogVerbosityLevel\",\"new_verbosity_level\":5}");
 
     self.receiveQueue = dispatch_queue_create("com.telegramx12.tdlib.receive", DISPATCH_QUEUE_SERIAL);
     self.running = YES;
@@ -60,6 +99,12 @@
             NSString *string = [NSString stringWithUTF8String:raw];
             if (string.length == 0) {
                 continue;
+            }
+            static NSInteger receiveLogCount = 0;
+            receiveLogCount++;
+            if (receiveLogCount <= 60) {
+                NSString *preview = string.length > 800 ? [string substringToIndex:800] : string;
+                TGXLogLine(@"recv #%ld: %@", (long)receiveLogCount, preview);
             }
             NSData *data = [string dataUsingEncoding:NSUTF8StringEncoding];
             id object = nil;
@@ -174,6 +219,7 @@
 - (void)handleAuthorizationState:(NSDictionary *)state {
     self.authorizationState = state;
     NSString *type = TGStringValue(state[@"@type"]);
+    TGXLogLine(@"authorization state: %@", type);
     self.isReady = [type isEqualToString:@"authorizationStateReady"];
 
     if ([type isEqualToString:@"authorizationStateWaitTdlibParameters"]) {
@@ -200,6 +246,7 @@
         return;
     }
     self.tdlibParametersSent = YES;
+    TGXLogLine(@"sending TDLib parameters (api_id=%d)", apiId);
 
     NSArray<NSString *> *paths = NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES);
     NSString *baseDirectory = [paths.firstObject stringByAppendingPathComponent:@"TelegramX12"];
