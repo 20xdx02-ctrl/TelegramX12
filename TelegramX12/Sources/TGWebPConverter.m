@@ -1,11 +1,12 @@
 #import "TGWebPConverter.h"
+#import "webp/decode.h"
+#import "w2j.h"
 
-#include <spawn.h>
-#include <sys/wait.h>
-#include <sys/stat.h>
-#include <unistd.h>
-
-extern char **environ;
+static void TGWebPReleaseData(void *info, const void *data, size_t size) {
+    (void)info;
+    (void)size;
+    WebPFree((void *)data);
+}
 
 @implementation TGWebPConverter
 
@@ -14,7 +15,7 @@ extern char **environ;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         cache = [[NSCache alloc] init];
-        cache.countLimit = 300;
+        cache.countLimit = 400;
         cache.totalCostLimit = 64 * 1024 * 1024; // 64 MB
     });
     return cache;
@@ -27,56 +28,6 @@ extern char **environ;
         queue = dispatch_queue_create("com.telegramx12.webp", DISPATCH_QUEUE_CONCURRENT);
     });
     return queue;
-}
-
-+ (nullable NSString *)converterBinaryPath {
-    static NSString *cachedPath = nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        NSMutableArray<NSString *> *candidates = [NSMutableArray array];
-
-        NSString *bundlePath = [[NSBundle mainBundle] pathForResource:@"webp2jpeg" ofType:nil];
-        if (bundlePath.length > 0) {
-            [candidates addObject:bundlePath];
-        }
-        NSString *inAppPath = [[[NSBundle mainBundle] bundlePath] stringByAppendingPathComponent:@"webp2jpeg"];
-        if (inAppPath.length > 0) {
-            [candidates addObject:inAppPath];
-        }
-
-        [candidates addObject:@"/usr/libexec/hitomi-webp2jpeg"];
-        [candidates addObject:@"/usr/libexec/manga-webp2jpeg"];
-        [candidates addObject:@"/usr/local/bin/webp2jpeg"];
-
-        NSString *appSupport = [NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES).firstObject stringByAppendingPathComponent:@"TelegramX12/webp2jpeg"];
-        [candidates addObject:appSupport];
-
-        for (NSString *candidate in candidates) {
-            if ([[NSFileManager defaultManager] fileExistsAtPath:candidate]) {
-                // Ensure executable permissions if writable
-                chmod([candidate UTF8String], 0755);
-                if (access([candidate UTF8String], X_OK) == 0) {
-                    cachedPath = [candidate copy];
-                    NSLog(@"[TelegramX12] Found working webp2jpeg binary at: %@", cachedPath);
-                    break;
-                }
-            }
-        }
-
-        // If no candidate was executable, try copying bundle version to App Support
-        if (cachedPath == nil && bundlePath.length > 0) {
-            NSString *dir = [appSupport stringByDeletingLastPathComponent];
-            [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
-            [[NSFileManager defaultManager] removeItemAtPath:appSupport error:nil];
-            if ([[NSFileManager defaultManager] copyItemAtPath:bundlePath toPath:appSupport error:nil]) {
-                chmod([appSupport UTF8String], 0755);
-                if (access([appSupport UTF8String], X_OK) == 0) {
-                    cachedPath = [appSupport copy];
-                }
-            }
-        }
-    });
-    return cachedPath;
 }
 
 + (BOOL)isWebPData:(NSData *)data {
@@ -109,15 +60,60 @@ extern char **environ;
     return [[self sharedCache] objectForKey:webpPath];
 }
 
-+ (NSString *)cacheDirectory {
-    static NSString *dir = nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        NSString *caches = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject;
-        dir = [caches stringByAppendingPathComponent:@"TelegramX12/webp"];
-        [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
-    });
-    return dir;
++ (nullable UIImage *)convertWebPData:(NSData *)data {
+    if (data.length == 0) {
+        return nil;
+    }
+
+    int width = 0;
+    int height = 0;
+    uint8_t *rgba = WebPDecodeRGBA((const uint8_t *)data.bytes, (size_t)data.length, &width, &height);
+    if (rgba != NULL && width > 0 && height > 0) {
+        CGDataProviderRef provider = CGDataProviderCreateWithData(NULL, rgba, (size_t)width * (size_t)height * 4, TGWebPReleaseData);
+        if (provider != NULL) {
+            CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+            CGImageRef imageRef = CGImageCreate(
+                (size_t)width,
+                (size_t)height,
+                8,
+                32,
+                (size_t)width * 4,
+                colorSpace,
+                kCGBitmapByteOrder32Big | kCGImageAlphaLast,
+                provider,
+                NULL,
+                NO,
+                kCGRenderingIntentDefault
+            );
+            CGColorSpaceRelease(colorSpace);
+            CGDataProviderRelease(provider);
+
+            if (imageRef != NULL) {
+                UIImage *image = [UIImage imageWithCGImage:imageRef scale:1.0 orientation:UIImageOrientationUp];
+                CGImageRelease(imageRef);
+                return image;
+            }
+        }
+        WebPFree(rgba);
+    }
+
+    // Fallback: w2j convert to JPEG
+    w2j_options opt;
+    w2j_options_default(&opt);
+    opt.quality = 90;
+    opt.background = 0xFFFFFF;
+
+    w2j_result result;
+    memset(&result, 0, sizeof(result));
+    char err[128] = {0};
+
+    int status = w2j_convert((const uint8_t *)data.bytes, data.length, &opt, &result, err, sizeof(err));
+    if (status == 0 && result.jpeg != NULL && result.jpeg_size > 0) {
+        NSData *jpegData = [NSData dataWithBytes:result.jpeg length:result.jpeg_size];
+        w2j_result_free(&result);
+        return [UIImage imageWithData:jpegData];
+    }
+    return nil;
 }
 
 + (void)convertWebPAtPath:(NSString *)webpPath
@@ -135,7 +131,7 @@ extern char **environ;
     }
 
     dispatch_async([self workQueue], ^{
-        // 2. Direct UIImage load attempt (in case system handles it)
+        // 2. Direct UIImage load attempt
         UIImage *directImage = [UIImage imageWithContentsOfFile:webpPath];
         if (directImage != nil) {
             [[self sharedCache] setObject:directImage forKey:webpPath];
@@ -145,65 +141,22 @@ extern char **environ;
             return;
         }
 
-        // 3. Compute destination converted JPEG path
-        NSString *filename = [NSString stringWithFormat:@"%llu_%@.jpg", (unsigned long long)webpPath.hash, webpPath.lastPathComponent.stringByDeletingPathExtension];
-        NSString *dstPath = [[self cacheDirectory] stringByAppendingPathComponent:filename];
-
-        NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:dstPath error:nil];
-        if (attrs != nil && [attrs fileSize] > 0) {
-            UIImage *img = [UIImage imageWithContentsOfFile:dstPath];
-            if (img != nil) {
-                [[self sharedCache] setObject:img forKey:webpPath];
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    if (completion) completion(dstPath, img);
-                });
-                return;
-            }
-        }
-
-        // 4. Run webp2jpeg conversion
-        NSString *bin = [self converterBinaryPath];
-        if (bin.length == 0) {
-            NSLog(@"[TelegramX12] Cannot convert WebP: webp2jpeg binary not found");
+        // 3. Read WebP data and convert in-process using libwebp
+        NSData *data = [NSData dataWithContentsOfFile:webpPath options:NSDataReadingMappedIfSafe error:nil];
+        if (data.length == 0) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 if (completion) completion(nil, nil);
             });
             return;
         }
 
-        pid_t pid = 0;
-        char *argv[] = {
-            (char *)[bin UTF8String],
-            (char *)"-q",
-            (char *)"90",
-            (char *)"-f",
-            (char *)"-o",
-            (char *)[dstPath UTF8String],
-            (char *)[webpPath UTF8String],
-            NULL
-        };
-
-        int spawnStatus = posix_spawn(&pid, [bin UTF8String], NULL, NULL, argv, environ);
-        if (spawnStatus == 0) {
-            int status = 0;
-            waitpid(pid, &status, 0);
-        } else {
-            NSLog(@"[TelegramX12] posix_spawn failed for %@ with error: %d", bin, spawnStatus);
-        }
-
-        UIImage *convertedImage = nil;
-        NSDictionary *dstAttrs = [[NSFileManager defaultManager] attributesOfItemAtPath:dstPath error:nil];
-        if (dstAttrs != nil && [dstAttrs fileSize] > 0) {
-            convertedImage = [UIImage imageWithContentsOfFile:dstPath];
-        }
-
+        UIImage *convertedImage = [self convertWebPData:data];
         if (convertedImage != nil) {
             [[self sharedCache] setObject:convertedImage forKey:webpPath];
             dispatch_async(dispatch_get_main_queue(), ^{
-                if (completion) completion(dstPath, convertedImage);
+                if (completion) completion(nil, convertedImage);
             });
         } else {
-            NSLog(@"[TelegramX12] WebP conversion failed for: %@", webpPath);
             dispatch_async(dispatch_get_main_queue(), ^{
                 if (completion) completion(nil, nil);
             });

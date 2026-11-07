@@ -360,6 +360,14 @@ static const CGFloat TGMessageCellTextSize = 16.0;
     _bubbleView.hidden = NO;
 
     _bubbleView.backgroundColor = message.isOutgoing ? [TGTheme outgoingBubbleColor] : [TGTheme incomingBubbleColor];
+    if (@available(iOS 11.0, *)) {
+        _bubbleView.layer.cornerRadius = 16.0;
+        if (message.isOutgoing) {
+            _bubbleView.layer.maskedCorners = kCALayerMinXMinYCorner | kCALayerMaxXMinYCorner | kCALayerMinXMaxYCorner;
+        } else {
+            _bubbleView.layer.maskedCorners = kCALayerMinXMinYCorner | kCALayerMaxXMinYCorner | kCALayerMaxXMaxYCorner;
+        }
+    }
     _bodyLabel.textColor = message.isOutgoing ? [UIColor whiteColor] : [UIColor blackColor];
     _captionLabel.textColor = message.isOutgoing ? [UIColor whiteColor] : [UIColor blackColor];
     _timeLabel.textColor = message.isOutgoing ? [UIColor colorWithWhite:1.0 alpha:0.75] : [TGTheme secondaryTextColor];
@@ -581,6 +589,13 @@ static const CGFloat TGMessageCellTextSize = 16.0;
 }
 
 - (void)loadStickerForMessage:(TGMessage *)message client:(nullable TGTDLibClient *)client {
+    // 1. Direct path from message if already locally present
+    NSString *path = message.mediaLocalPath;
+    if (path.length > 0 && [[NSFileManager defaultManager] fileExistsAtPath:path]) {
+        [self displayStickerAtPath:path messageId:message.messageId];
+        return;
+    }
+
     int32_t fileId = message.mediaFileId > 0 ? message.mediaFileId : message.thumbnailFileId;
     if (fileId <= 0 || client == nil) {
         self.stickerEmojiLabel.hidden = NO;
@@ -588,29 +603,56 @@ static const CGFloat TGMessageCellTextSize = 16.0;
         return;
     }
 
-    NSString *path = [client localPathForFileId:fileId];
+    path = [client localPathForFileId:fileId];
     if (path.length > 0 && [[NSFileManager defaultManager] fileExistsAtPath:path]) {
         [self displayStickerAtPath:path messageId:message.messageId];
         return;
     }
 
+    // Try thumbnail if main file not yet local
+    if (message.thumbnailFileId > 0 && message.thumbnailFileId != fileId) {
+        NSString *thumbPath = [client localPathForFileId:message.thumbnailFileId];
+        if (thumbPath.length > 0 && [[NSFileManager defaultManager] fileExistsAtPath:thumbPath]) {
+            [self displayStickerAtPath:thumbPath messageId:message.messageId];
+        }
+    }
+
     // Show emoji placeholder while sticker is loading
-    self.stickerEmojiLabel.hidden = NO;
-    self.stickerEmojiLabel.text = message.stickerEmoji.length > 0 ? message.stickerEmoji : @"🌟";
+    if (self.stickerImageView.image == nil) {
+        self.stickerEmojiLabel.hidden = NO;
+        self.stickerEmojiLabel.text = message.stickerEmoji.length > 0 ? message.stickerEmoji : @"🌟";
+    }
 
     int64_t msgId = message.messageId;
     __weak typeof(self) weakSelf = self;
     [client downloadFileWithId:fileId priority:30 completion:^(NSString *downloadedPath, NSDictionary *file) {
         if (weakSelf.currentMessageId == msgId && downloadedPath.length > 0) {
             [weakSelf displayStickerAtPath:downloadedPath messageId:msgId];
+        } else if (weakSelf.currentMessageId == msgId && message.thumbnailFileId > 0 && message.thumbnailFileId != fileId) {
+            [client downloadFileWithId:message.thumbnailFileId priority:25 completion:^(NSString *thumbDownloadedPath, NSDictionary *thumbFile) {
+                if (weakSelf.currentMessageId == msgId && thumbDownloadedPath.length > 0) {
+                    [weakSelf displayStickerAtPath:thumbDownloadedPath messageId:msgId];
+                }
+            }];
         }
     }];
 }
 
 - (void)displayStickerAtPath:(NSString *)path messageId:(int64_t)msgId {
+    if (path.length == 0) return;
     __weak typeof(self) weakSelf = self;
 
-    // Check if it is a WebP file
+    // Check cached image first
+    UIImage *cached = [TGWebPConverter cachedImageForPath:path];
+    if (cached != nil) {
+        if (weakSelf.currentMessageId == msgId) {
+            weakSelf.stickerEmojiLabel.hidden = YES;
+            weakSelf.stickerImageView.image = cached;
+        }
+        return;
+    }
+
+    // Check if it is a WebP file or regular image
     if ([TGWebPConverter isWebPFile:path]) {
         [TGWebPConverter convertWebPAtPath:path completion:^(NSString *jpgPath, UIImage *image) {
             if (weakSelf.currentMessageId == msgId && image != nil) {
@@ -620,20 +662,23 @@ static const CGFloat TGMessageCellTextSize = 16.0;
         }];
     } else {
         UIImage *img = [UIImage imageWithContentsOfFile:path];
-        if (img != nil) {
-            self.stickerEmojiLabel.hidden = YES;
-            self.stickerImageView.image = img;
+        if (img != nil && weakSelf.currentMessageId == msgId) {
+            weakSelf.stickerEmojiLabel.hidden = YES;
+            weakSelf.stickerImageView.image = img;
         }
     }
 }
 
 - (NSString *)timeTextForMessage:(TGMessage *)message {
     if (message.isFailed) {
-        return @"Nie wysłano";
+        return @"Nie wysłano  ⚠️";
     }
     NSString *time = [TGTheme timeStringForTimestamp:message.date];
     if (message.isSending) {
         return [time stringByAppendingString:@"  ⏳"];
+    }
+    if (message.isOutgoing) {
+        return [time stringByAppendingString:message.isRead ? @"  ✓✓" : @"  ✓"];
     }
     return time;
 }

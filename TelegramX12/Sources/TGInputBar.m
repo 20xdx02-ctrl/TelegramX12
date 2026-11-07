@@ -3,6 +3,7 @@
 
 @interface TGInputBar () <UITextFieldDelegate>
 @property (nonatomic, strong, readwrite) UITextField *textField;
+@property (nonatomic, strong) UIButton *attachButton;
 @property (nonatomic, strong) UIButton *sendButton;
 @property (nonatomic, strong) UIView *separatorView;
 @end
@@ -18,6 +19,14 @@
         _separatorView.translatesAutoresizingMaskIntoConstraints = NO;
         _separatorView.backgroundColor = [TGTheme separatorColor];
         [self addSubview:_separatorView];
+
+        _attachButton = [UIButton buttonWithType:UIButtonTypeCustom];
+        _attachButton.translatesAutoresizingMaskIntoConstraints = NO;
+        [_attachButton setTitle:@"📎" forState:UIControlStateNormal];
+        _attachButton.titleLabel.font = [UIFont systemFontOfSize:22.0];
+        _attachButton.accessibilityLabel = @"Załącznik";
+        [_attachButton addTarget:self action:@selector(attachTapped) forControlEvents:UIControlEventTouchUpInside];
+        [self addSubview:_attachButton];
 
         _textField = [[UITextField alloc] initWithFrame:CGRectZero];
         _textField.translatesAutoresizingMaskIntoConstraints = NO;
@@ -52,7 +61,12 @@
             [_separatorView.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
             [_separatorView.heightAnchor constraintEqualToConstant:0.5],
 
-            [_textField.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:12.0],
+            [_attachButton.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:8.0],
+            [_attachButton.centerYAnchor constraintEqualToAnchor:_textField.centerYAnchor],
+            [_attachButton.widthAnchor constraintEqualToConstant:32.0],
+            [_attachButton.heightAnchor constraintEqualToConstant:32.0],
+
+            [_textField.leadingAnchor constraintEqualToAnchor:_attachButton.trailingAnchor constant:6.0],
             [_textField.topAnchor constraintEqualToAnchor:self.topAnchor constant:7.0],
             [_textField.bottomAnchor constraintEqualToAnchor:self.bottomAnchor constant:-7.0],
             [_textField.trailingAnchor constraintEqualToAnchor:_sendButton.leadingAnchor constant:-8.0],
@@ -66,6 +80,12 @@
         [self updateSendButton];
     }
     return self;
+}
+
+- (void)attachTapped {
+    if (self.onAttachTap) {
+        self.onAttachTap();
+    }
 }
 
 - (void)textChanged {

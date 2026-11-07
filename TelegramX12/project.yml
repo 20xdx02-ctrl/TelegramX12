@@ -28,9 +28,11 @@ targets:
         INFOPLIST_FILE: Info.plist
         PRODUCT_BUNDLE_IDENTIFIER: com.telegramx12.app
         PRODUCT_NAME: TelegramX12
-        HEADER_SEARCH_PATHS: "$(SRCROOT)/Vendor/TDLibFramework.framework/Headers"
+        HEADER_SEARCH_PATHS:
+          - "$(SRCROOT)/Vendor/TDLibFramework.framework/Headers"
+          - "$(SRCROOT)/Vendor/libwebp/include"
         FRAMEWORK_SEARCH_PATHS: "$(SRCROOT)/Vendor"
-        OTHER_LDFLAGS: "-framework TDLibFramework -framework AVFoundation -framework AVKit -framework CoreMedia -lc++ -lz"
+        OTHER_LDFLAGS: "$(SRCROOT)/Vendor/libwebp/libwebpdec.a -framework TDLibFramework -framework AVFoundation -framework AVKit -framework CoreMedia -lc++ -lz"
         CODE_SIGN_STYLE: Manual
         DEVELOPMENT_TEAM: ""
         PROVISIONING_PROFILE_SPECIFIER: ""

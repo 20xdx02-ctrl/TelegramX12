@@ -82,6 +82,19 @@ static NSString *TGPrimaryTextFromContent(NSDictionary *content) {
     return @"";
 }
 
+static NSString *TGLocalPathFromFile(NSDictionary *file) {
+    if (![file isKindOfClass:[NSDictionary class]]) return nil;
+    NSDictionary *local = file[@"local"];
+    if (![local isKindOfClass:[NSDictionary class]]) return nil;
+    if (TGBoolValue(local[@"is_downloading_completed"])) {
+        NSString *path = TGStringValue(local[@"path"]);
+        if (path.length > 0 && [[NSFileManager defaultManager] fileExistsAtPath:path]) {
+            return path;
+        }
+    }
+    return nil;
+}
+
 NSString *TGMessageContentType(NSDictionary *content) {
     return TGStringValue(content[@"@type"]);
 }
@@ -295,6 +308,18 @@ NSString *TGMessagePreviewText(NSDictionary *content) {
         self.unreadCount = (NSInteger)TGInt32Value(dictionary[@"unread_count"]);
     }
 
+    if (dictionary[@"last_read_inbox_message_id"] != nil) {
+        self.lastReadInboxMessageId = TGInt64Value(dictionary[@"last_read_inbox_message_id"]);
+    }
+    if (dictionary[@"last_read_outbox_message_id"] != nil) {
+        self.lastReadOutboxMessageId = TGInt64Value(dictionary[@"last_read_outbox_message_id"]);
+    }
+
+    NSDictionary *notif = dictionary[@"notification_settings"];
+    if ([notif isKindOfClass:[NSDictionary class]]) {
+        self.isMuted = !TGBoolValue(notif[@"use_default_mute_for"]) && (TGInt32Value(notif[@"mute_for"]) > 0);
+    }
+
     NSDictionary *type = dictionary[@"type"];
     if ([type isKindOfClass:[NSDictionary class]]) {
         NSString *typeName = TGStringValue(type[@"@type"]);
@@ -415,6 +440,10 @@ NSString *TGMessagePreviewText(NSDictionary *content) {
 
                     NSDictionary *thumbSize = sizes.firstObject;
                     self.thumbnailFileId = TGInt32Value(thumbSize[@"photo"][@"id"]);
+                    self.mediaLocalPath = TGLocalPathFromFile(bestSize[@"photo"]);
+                    if (self.mediaLocalPath.length == 0) {
+                        self.mediaLocalPath = TGLocalPathFromFile(thumbSize[@"photo"]);
+                    }
                 }
                 NSDictionary *minithumb = photo[@"minithumbnail"];
                 if ([minithumb isKindOfClass:[NSDictionary class]]) {
@@ -429,12 +458,29 @@ NSString *TGMessagePreviewText(NSDictionary *content) {
             NSDictionary *sticker = contentDict[@"sticker"];
             if ([sticker isKindOfClass:[NSDictionary class]]) {
                 self.stickerEmoji = TGStringValue(sticker[@"emoji"]);
-                self.mediaFileId = TGInt32Value(sticker[@"sticker"][@"id"]);
                 self.mediaWidth = TGInt32Value(sticker[@"width"]);
                 self.mediaHeight = TGInt32Value(sticker[@"height"]);
                 NSDictionary *thumb = sticker[@"thumbnail"];
                 if ([thumb isKindOfClass:[NSDictionary class]]) {
                     self.thumbnailFileId = TGInt32Value(thumb[@"file"][@"id"]);
+                }
+
+                NSDictionary *format = sticker[@"format"];
+                NSString *formatType = TGStringValue(format[@"@type"]);
+                BOOL isVectorOrVideo = [formatType isEqualToString:@"stickerFormatTgs"] ||
+                                       [formatType isEqualToString:@"stickerFormatWebm"] ||
+                                       TGBoolValue(sticker[@"is_animated"]) ||
+                                       TGBoolValue(sticker[@"is_video"]);
+
+                if (isVectorOrVideo && self.thumbnailFileId > 0) {
+                    self.mediaFileId = self.thumbnailFileId;
+                    self.mediaLocalPath = TGLocalPathFromFile(thumb[@"file"]);
+                } else {
+                    self.mediaFileId = TGInt32Value(sticker[@"sticker"][@"id"]);
+                    self.mediaLocalPath = TGLocalPathFromFile(sticker[@"sticker"]);
+                    if (self.mediaLocalPath.length == 0 && [thumb isKindOfClass:[NSDictionary class]]) {
+                        self.mediaLocalPath = TGLocalPathFromFile(thumb[@"file"]);
+                    }
                 }
             }
         } else if ([self.contentType isEqualToString:@"messageAnimation"]) {
@@ -562,6 +608,10 @@ NSString *TGMessagePreviewText(NSDictionary *content) {
     } else {
         self.isSending = NO;
         self.isFailed = NO;
+    }
+
+    if (dictionary[@"is_read"] != nil) {
+        self.isRead = TGBoolValue(dictionary[@"is_read"]);
     }
 
     NSDictionary *sender = dictionary[@"sender_id"];

@@ -49,6 +49,9 @@ FOUNDATION_EXPORT NSString *TGDurationString(int32_t seconds);
 @property (nonatomic) BOOL hasMainListPosition;
 @property (nonatomic) BOOL isGroup;
 @property (nonatomic) BOOL isChannel;
+@property (nonatomic) int64_t lastReadInboxMessageId;
+@property (nonatomic) int64_t lastReadOutboxMessageId;
+@property (nonatomic) BOOL isMuted;
 @property (nonatomic, strong) NSDictionary *raw;
 
 + (instancetype)chatWithDictionary:(NSDictionary *)dictionary;
@@ -65,6 +68,7 @@ FOUNDATION_EXPORT NSString *TGDurationString(int32_t seconds);
 @property (nonatomic) int64_t chatId;
 @property (nonatomic) int32_t date;
 @property (nonatomic) BOOL isOutgoing;
+@property (nonatomic) BOOL isRead;
 @property (nonatomic, copy) NSString *text;
 @property (nonatomic, copy) NSString *contentType;
 @property (nonatomic) TGMessageType messageType;
@@ -78,6 +82,7 @@ FOUNDATION_EXPORT NSString *TGDurationString(int32_t seconds);
 // Media attributes
 @property (nonatomic) int32_t mediaFileId;
 @property (nonatomic) int32_t thumbnailFileId;
+@property (nonatomic, copy, nullable) NSString *mediaLocalPath;
 @property (nonatomic) CGFloat mediaWidth;
 @property (nonatomic) CGFloat mediaHeight;
 @property (nonatomic) int32_t mediaDuration;

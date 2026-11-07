@@ -46,6 +46,10 @@ typedef void (^TGFileBlock)(NSString * _Nullable localPath, NSDictionary * _Null
                      limit:(NSInteger)limit
                 completion:(nullable TGHistoryBlock)completion;
 - (void)sendText:(NSString *)text toChat:(int64_t)chatId completion:(nullable TGMessageBlock)completion;
+- (void)sendPhotoAtPath:(NSString *)path
+                 toChat:(int64_t)chatId
+                caption:(nullable NSString *)caption
+             completion:(nullable TGMessageBlock)completion;
 - (void)viewMessages:(NSArray<NSNumber *> *)messageIds inChat:(int64_t)chatId;
 - (void)openChat:(int64_t)chatId;
 - (void)closeChat:(int64_t)chatId;

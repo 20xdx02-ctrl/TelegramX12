@@ -7,14 +7,17 @@
 #import "TGTDLibClient.h"
 #import "TGTheme.h"
 
-@interface TGChatListViewController () <UITableViewDataSource, UITableViewDelegate>
+@interface TGChatListViewController () <UITableViewDataSource, UITableViewDelegate, UISearchResultsUpdating>
 @property (nonatomic, strong) TGTDLibClient *client;
 @property (nonatomic, strong) UITableView *tableView;
 @property (nonatomic, strong) UIRefreshControl *refreshControl;
 @property (nonatomic, strong) UILabel *emptyLabel;
 @property (nonatomic, strong) UIActivityIndicatorView *spinner;
+@property (nonatomic, strong) UISearchController *searchController;
+@property (nonatomic, copy) NSString *searchQuery;
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, TGChat *> *chats;
 @property (nonatomic, strong) NSArray<TGChat *> *sortedChats;
+@property (nonatomic, strong) NSArray<TGChat *> *filteredChats;
 @property (nonatomic) NSInteger pendingChatLoads;
 @property (nonatomic) BOOL didLoadOnce;
 @end
@@ -27,6 +30,7 @@
         _client = client;
         _chats = [NSMutableDictionary dictionary];
         _sortedChats = @[];
+        _filteredChats = @[];
     }
     return self;
 }
@@ -40,6 +44,14 @@
                                                                               style:UIBarButtonItemStylePlain
                                                                              target:self
                                                                              action:@selector(openSettings)];
+
+    self.searchController = [[UISearchController alloc] initWithSearchResultsController:nil];
+    self.searchController.searchResultsUpdater = self;
+    self.searchController.obscuresBackgroundDuringPresentation = NO;
+    self.searchController.dimsBackgroundDuringPresentation = NO;
+    self.searchController.searchBar.placeholder = @"Szukaj czatów i wiadomości";
+    self.navigationItem.searchController = self.searchController;
+    self.definesPresentationContext = YES;
 
     self.tableView = [[UITableView alloc] initWithFrame:CGRectZero style:UITableViewStylePlain];
     self.tableView.translatesAutoresizingMaskIntoConstraints = NO;

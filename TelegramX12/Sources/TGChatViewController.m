@@ -9,9 +9,13 @@
 #import <AVFoundation/AVFoundation.h>
 #import <AVKit/AVKit.h>
 
-@interface TGChatViewController () <UITableViewDataSource, UITableViewDelegate>
+@interface TGChatViewController () <UITableViewDataSource, UITableViewDelegate, UIImagePickerControllerDelegate, UINavigationControllerDelegate>
 @property (nonatomic, strong) TGTDLibClient *client;
 @property (nonatomic) int64_t chatId;
+@property (nonatomic) int64_t lastReadOutboxMessageId;
+@property (nonatomic, strong) UIView *titleHeaderView;
+@property (nonatomic, strong) UILabel *titleHeaderLabel;
+@property (nonatomic, strong) UILabel *subtitleHeaderLabel;
 @property (nonatomic, strong) UITableView *tableView;
 @property (nonatomic, strong) TGInputBar *inputBar;
 @property (nonatomic, strong) NSLayoutConstraint *inputBottomConstraint;
@@ -48,8 +52,25 @@
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.title = self.chatTitleForDisplay;
-    self.view.backgroundColor = [UIColor whiteColor];
+    self.view.backgroundColor = [TGTheme chatBackgroundColor];
     self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
+
+    _titleHeaderView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 180, 44)];
+    _titleHeaderLabel = [[UILabel alloc] initWithFrame:CGRectMake(0, 4, 180, 20)];
+    _titleHeaderLabel.font = [TGTheme semiboldFontOfSize:16.0];
+    _titleHeaderLabel.textColor = [UIColor blackColor];
+    _titleHeaderLabel.textAlignment = NSTextAlignmentCenter;
+    _titleHeaderLabel.text = self.chatTitleForDisplay;
+    [_titleHeaderView addSubview:_titleHeaderLabel];
+
+    _subtitleHeaderLabel = [[UILabel alloc] initWithFrame:CGRectMake(0, 24, 180, 16)];
+    _subtitleHeaderLabel.font = [TGTheme regularFontOfSize:12.0];
+    _subtitleHeaderLabel.textColor = [TGTheme secondaryTextColor];
+    _subtitleHeaderLabel.textAlignment = NSTextAlignmentCenter;
+    [_titleHeaderView addSubview:_subtitleHeaderLabel];
+
+    self.navigationItem.titleView = _titleHeaderView;
+    [self updateSubtitle];
 
     [self updateSenderVisibility];
 
@@ -58,7 +79,7 @@
     self.tableView.dataSource = self;
     self.tableView.delegate = self;
     self.tableView.separatorStyle = UITableViewCellSeparatorStyleNone;
-    self.tableView.backgroundColor = [UIColor whiteColor];
+    self.tableView.backgroundColor = [TGTheme chatBackgroundColor];
     self.tableView.estimatedRowHeight = 60.0;
     self.tableView.keyboardDismissMode = UIScrollViewKeyboardDismissModeInteractive;
     [self.tableView registerClass:[TGMessageCell class] forCellReuseIdentifier:@"TGMessageCell"];
@@ -69,6 +90,9 @@
     __weak typeof(self) weakSelf = self;
     self.inputBar.onSend = ^(NSString *text) {
         [weakSelf sendText:text];
+    };
+    self.inputBar.onAttachTap = ^{
+        [weakSelf presentAttachmentActionSheet];
     };
     [self.view addSubview:self.inputBar];
 
@@ -165,6 +189,11 @@
 - (void)loadInitialHistory {
     [self.spinner startAnimating];
     self.emptyLabel.hidden = YES;
+    NSDictionary *chat = [self.client chatWithId:self.chatId];
+    if (chat != nil) {
+        self.lastReadOutboxMessageId = TGInt64Value(chat[@"last_read_outbox_message_id"]);
+    }
+    [self updateSubtitle];
     __weak typeof(self) weakSelf = self;
     [self.client loadHistoryForChat:self.chatId fromMessageId:0 limit:50 completion:^(NSArray<NSDictionary *> *messages, NSInteger totalCount, NSDictionary *error) {
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -210,6 +239,9 @@
     for (NSDictionary *dictionary in dictionaries) {
         TGMessage *message = [TGMessage messageWithDictionary:dictionary];
         if (message.messageId != 0) {
+            if (message.isOutgoing && self.lastReadOutboxMessageId > 0) {
+                message.isRead = (message.messageId <= self.lastReadOutboxMessageId);
+            }
             [loaded addObject:message];
         }
     }
@@ -442,10 +474,126 @@
             if (title.length > 0) {
                 self.chatTitleForDisplay = title;
                 self.title = title;
+                self.titleHeaderLabel.text = title;
             }
         }
         return;
     }
+
+    if ([type isEqualToString:@"updateChatReadOutbox"]) {
+        if (TGInt64Value(update[@"chat_id"]) == self.chatId) {
+            int64_t lastReadId = TGInt64Value(update[@"last_read_outbox_message_id"]);
+            self.lastReadOutboxMessageId = lastReadId;
+            BOOL didUpdate = NO;
+            for (TGMessage *msg in self.messages) {
+                if (msg.isOutgoing && !msg.isRead && msg.messageId <= lastReadId) {
+                    msg.isRead = YES;
+                    didUpdate = YES;
+                }
+            }
+            if (didUpdate) {
+                [self.tableView reloadData];
+            }
+        }
+        return;
+    }
+}
+
+- (void)updateSubtitle {
+    NSDictionary *chat = [self.client chatWithId:self.chatId];
+    if (chat == nil) return;
+    NSDictionary *type = chat[@"type"];
+    NSString *typeName = TGStringValue(type[@"@type"]);
+
+    if ([typeName isEqualToString:@"chatTypePrivate"] || [typeName isEqualToString:@"chatTypeSecret"]) {
+        int64_t userId = TGInt64Value(type[@"user_id"]);
+        NSDictionary *user = [self.client userWithId:userId];
+        if (user != nil) {
+            NSDictionary *status = user[@"status"];
+            NSString *statusType = TGStringValue(status[@"@type"]);
+            if ([statusType isEqualToString:@"userStatusOnline"]) {
+                self.subtitleHeaderLabel.text = @"online";
+                self.subtitleHeaderLabel.textColor = [TGTheme accentColor];
+                return;
+            } else if ([statusType isEqualToString:@"userStatusOffline"]) {
+                int32_t was = TGInt32Value(status[@"was_online"]);
+                if (was > 0) {
+                    self.subtitleHeaderLabel.text = [NSString stringWithFormat:@"był(a) %@", [TGTheme chatListTimeStringForTimestamp:was]];
+                } else {
+                    self.subtitleHeaderLabel.text = @"niedawno";
+                }
+                self.subtitleHeaderLabel.textColor = [TGTheme secondaryTextColor];
+                return;
+            } else if ([statusType isEqualToString:@"userStatusRecently"]) {
+                self.subtitleHeaderLabel.text = @"niedawno";
+                self.subtitleHeaderLabel.textColor = [TGTheme secondaryTextColor];
+                return;
+            }
+        }
+    } else if ([typeName isEqualToString:@"chatTypeBasicGroup"] || [typeName isEqualToString:@"chatTypeSupergroup"]) {
+        int32_t count = TGInt32Value(chat[@"member_count"]);
+        if (count > 0) {
+            self.subtitleHeaderLabel.text = [NSString stringWithFormat:@"%d członków", count];
+        } else {
+            self.subtitleHeaderLabel.text = @"grupa";
+        }
+        self.subtitleHeaderLabel.textColor = [TGTheme secondaryTextColor];
+        return;
+    } else if (chat[@"is_channel"] != nil && TGBoolValue(chat[@"is_channel"])) {
+        self.subtitleHeaderLabel.text = @"kanał";
+        self.subtitleHeaderLabel.textColor = [TGTheme secondaryTextColor];
+        return;
+    }
+}
+
+- (void)presentAttachmentActionSheet {
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:nil message:nil preferredStyle:UIAlertControllerStyleActionSheet];
+    if ([UIImagePickerController isSourceTypeAvailable:UIImagePickerControllerSourceTypePhotoLibrary]) {
+        [sheet addAction:[UIAlertAction actionWithTitle:@"Zdjęcie z galerii" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            UIImagePickerController *picker = [[UIImagePickerController alloc] init];
+            picker.sourceType = UIImagePickerControllerSourceTypePhotoLibrary;
+            picker.delegate = self;
+            [self presentViewController:picker animated:YES completion:nil];
+        }]];
+    }
+    if ([UIImagePickerController isSourceTypeAvailable:UIImagePickerControllerSourceTypeCamera]) {
+        [sheet addAction:[UIAlertAction actionWithTitle:@"Zrób zdjęcie" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            UIImagePickerController *picker = [[UIImagePickerController alloc] init];
+            picker.sourceType = UIImagePickerControllerSourceTypeCamera;
+            picker.delegate = self;
+            [self presentViewController:picker animated:YES completion:nil];
+        }]];
+    }
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Anuluj" style:UIAlertActionStyleCancel handler:nil]];
+    if (sheet.popoverPresentationController != nil) {
+        sheet.popoverPresentationController.sourceView = self.inputBar;
+        sheet.popoverPresentationController.sourceRect = self.inputBar.bounds;
+    }
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)imagePickerController:(UIImagePickerController *)picker didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey,id> *)info {
+    [picker dismissViewControllerAnimated:YES completion:nil];
+    UIImage *image = info[UIImagePickerControllerOriginalImage];
+    if (image == nil) return;
+
+    NSString *tmpDir = NSTemporaryDirectory();
+    NSString *filePath = [tmpDir stringByAppendingPathComponent:[NSString stringWithFormat:@"send_%llu.jpg", (unsigned long long)(CACurrentMediaTime() * 1000.0)]];
+    NSData *data = UIImageJPEGRepresentation(image, 0.85);
+    [data writeToFile:filePath atomically:YES];
+
+    __weak typeof(self) weakSelf = self;
+    [self.client sendPhotoAtPath:filePath toChat:self.chatId caption:nil completion:^(NSDictionary *message, NSDictionary *error) {
+        if (message != nil) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [weakSelf upsertMessageDictionary:message scrollToBottom:YES forceScroll:YES];
+            });
+        }
+    }];
+}
+
+- (void)imagePickerControllerDidCancel:(UIImagePickerController *)picker {
+    [picker dismissViewControllerAnimated:YES completion:nil];
 }
 
 - (void)upsertMessageDictionary:(NSDictionary *)dictionary scrollToBottom:(BOOL)scroll forceScroll:(BOOL)forceScroll {

@@ -111,17 +111,25 @@
 
     NSString *preview = chat.lastMessageText.length > 0 ? chat.lastMessageText : @"Brak wiadomości";
     if (chat.lastMessageIsOutgoing && chat.lastMessageText.length > 0) {
-        preview = [@"Ty: " stringByAppendingString:preview];
+        NSString *check = (chat.lastMessageId <= chat.lastReadOutboxMessageId && chat.lastReadOutboxMessageId > 0) ? @"✓✓ " : @"✓ ";
+        preview = [NSString stringWithFormat:@"Ty: %@%@", check, chat.lastMessageText];
     }
     if (chat.isChannel && chat.lastMessageText.length == 0) {
         preview = @"Kanał";
     }
     self.previewLabel.text = preview;
-    self.timeLabel.text = [TGTheme chatListTimeStringForTimestamp:chat.lastMessageDate];
+
+    NSString *timeStr = [TGTheme chatListTimeStringForTimestamp:chat.lastMessageDate];
+    if (chat.pinned) {
+        self.timeLabel.text = [@"📌 " stringByAppendingString:timeStr];
+    } else {
+        self.timeLabel.text = timeStr;
+    }
 
     if (chat.unreadCount > 0) {
         self.unreadLabel.hidden = NO;
         self.unreadLabel.text = chat.unreadCount > 99 ? @"99+" : [NSString stringWithFormat:@"%ld", (long)chat.unreadCount];
+        self.unreadLabel.backgroundColor = chat.isMuted ? [TGTheme secondaryTextColor] : [TGTheme accentColor];
         self.unreadWidthConstraint.constant = chat.unreadCount > 99 ? 32.0 : 22.0;
         self.previewTrailingConstraint.constant = chat.unreadCount > 99 ? -52.0 : -42.0;
         self.titleLabel.textColor = [UIColor blackColor];

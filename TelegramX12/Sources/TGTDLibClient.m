@@ -543,6 +543,46 @@ static void TGXLogLine(NSString *format, ...) {
     }];
 }
 
+- (void)sendPhotoAtPath:(NSString *)path
+                 toChat:(int64_t)chatId
+                caption:(nullable NSString *)caption
+             completion:(nullable TGMessageBlock)completion {
+    if (path.length == 0) {
+        if (completion != nil) {
+            completion(nil, @{@"@type": @"error", @"message": @"Brak ścieżki pliku"});
+        }
+        return;
+    }
+    NSDictionary *content = @{
+        @"@type": @"inputMessagePhoto",
+        @"photo": @{
+            @"@type": @"inputFileLocal",
+            @"path": path
+        },
+        @"caption": @{
+            @"@type": @"formattedText",
+            @"text": caption ?: @"",
+            @"entities": @[]
+        }
+    };
+    NSDictionary *request = @{
+        @"@type": @"sendMessage",
+        @"chat_id": @(chatId),
+        @"input_message_content": content
+    };
+    [self sendRequest:request completion:^(NSDictionary *response) {
+        if ([TGStringValue(response[@"@type"]) isEqualToString:@"message"]) {
+            if (completion != nil) {
+                completion(response, nil);
+            }
+            return;
+        }
+        if (completion != nil) {
+            completion(nil, response);
+        }
+    }];
+}
+
 - (void)viewMessages:(NSArray<NSNumber *> *)messageIds inChat:(int64_t)chatId {
     if (messageIds.count == 0) {
         return;

@@ -12,8 +12,10 @@ TelegramX12_RESOURCE_FILES = Info.plist
 TelegramX12_RESOURCE_DIRS = Resources
 
 TelegramX12_CFLAGS = -fobjc-arc -Wall -Wextra -Wno-unused-parameter \
-	-I$(THEOS_PROJECT_DIR)/Vendor/TDLibFramework.framework/Headers
+	-I$(THEOS_PROJECT_DIR)/Vendor/TDLibFramework.framework/Headers \
+	-I$(THEOS_PROJECT_DIR)/Vendor/libwebp/include
 TelegramX12_LDFLAGS = -F$(THEOS_PROJECT_DIR)/Vendor \
+	$(THEOS_PROJECT_DIR)/Vendor/libwebp/libwebpdec.a \
 	-framework TDLibFramework -lc++ -lz
 TelegramX12_CODESIGN_FLAGS = -S
 

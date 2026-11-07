@@ -116,9 +116,11 @@
 }
 
 - (void)tgClient:(TGTDLibClient *)client didReceiveUpdate:(NSDictionary *)update {
-    UIViewController *top = self.navigationController.topViewController;
-    if (top != nil && [top respondsToSelector:@selector(handleTDLibUpdate:)]) {
-        [(id)top handleTDLibUpdate:update];
+    NSArray<UIViewController *> *viewControllers = [self.navigationController.viewControllers copy];
+    for (UIViewController *vc in viewControllers) {
+        if ([vc respondsToSelector:@selector(handleTDLibUpdate:)]) {
+            [(id)vc handleTDLibUpdate:update];
+        }
     }
 }
 
