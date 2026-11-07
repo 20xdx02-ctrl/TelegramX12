@@ -9,7 +9,9 @@ on:
 
 jobs:
   build:
-    runs-on: macos-14
+    # macos-14 was retired on 2026-11-02. macos-15 (arm64, Xcode 16.4 by
+    # default) still supports an iOS 12.0 deployment target.
+    runs-on: macos-15
     timeout-minutes: 45
 
     steps:
@@ -18,10 +20,8 @@ jobs:
 
       - name: Select Xcode
         run: |
-          if [ -d /Applications/Xcode_15.4.app ]; then
-            sudo xcode-select -s /Applications/Xcode_15.4.app
-          elif [ -d /Applications/Xcode_15.3.app ]; then
-            sudo xcode-select -s /Applications/Xcode_15.3.app
+          if [ -d /Applications/Xcode_16.4.app ]; then
+            sudo xcode-select -s /Applications/Xcode_16.4.app
           fi
           xcodebuild -version
           xcodebuild -showsdks

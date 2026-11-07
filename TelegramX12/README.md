@@ -77,7 +77,7 @@ Uwaga: `make package` tworzy paczkę dla jailbroken iOS 12. Na urządzeniu bez j
 
 Workflow `.github/workflows/ios.yml`:
 
-- uruchamia się na `macos-14`,
+- uruchamia się na `macos-15` (Xcode 16.4; `macos-14` wycofano 2026-11-02),
 - instaluje XcodeGen,
 - generuje projekt Xcode z `TelegramX12/project.yml`,
 - buduje `TelegramX12.app` dla `iphoneos/arm64` z deployment target `12.0`,
