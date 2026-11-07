@@ -101,7 +101,12 @@
 }
 
 - (void)configureWithChat:(TGChat *)chat {
-    [self.avatarView setTitle:chat.title identifier:chat.chatId];
+    [self configureWithChat:chat client:nil];
+}
+
+- (void)configureWithChat:(TGChat *)chat client:(nullable TGTDLibClient *)client {
+    int32_t photoId = TGInt32Value(chat.raw[@"photo"][@"small"][@"id"]);
+    [self.avatarView loadAvatarWithFileId:photoId client:client title:chat.title identifier:chat.chatId];
     self.titleLabel.text = chat.title.length > 0 ? chat.title : @"Czat";
 
     NSString *preview = chat.lastMessageText.length > 0 ? chat.lastMessageText : @"Brak wiadomości";

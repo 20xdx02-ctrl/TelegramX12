@@ -25,6 +25,47 @@ NSString *TGStringValue(id value) {
     return [value isKindOfClass:[NSString class]] ? (NSString *)value : @"";
 }
 
+NSString *TGDataSizeString(int64_t size) {
+    if (size >= 1024LL * 1024LL * 1024LL) {
+        double rem = (double)(size % (1024LL * 1024LL * 1024LL)) / (1024.0 * 1024.0 * 102.4);
+        int64_t rounded = (int64_t)floor(rem);
+        if (rounded != 0) {
+            return [NSString stringWithFormat:@"%lld.%lld GB", size / (1024LL * 1024LL * 1024LL), (long long)rounded];
+        } else {
+            return [NSString stringWithFormat:@"%lld GB", size / (1024LL * 1024LL * 1024LL)];
+        }
+    } else if (size >= 1024LL * 1024LL) {
+        double rem = (double)(size % (1024LL * 1024LL)) / (1024.0 * 102.4);
+        int64_t rounded = (int64_t)floor(rem);
+        if (rounded != 0) {
+            return [NSString stringWithFormat:@"%lld.%lld MB", size / (1024LL * 1024LL), (long long)rounded];
+        } else {
+            return [NSString stringWithFormat:@"%lld MB", size / (1024LL * 1024LL)];
+        }
+    } else if (size >= 1024LL) {
+        int64_t rem = (size % 1024LL) / 102LL;
+        if (rem != 0) {
+            return [NSString stringWithFormat:@"%lld.%lld KB", size / 1024LL, (long long)rem];
+        } else {
+            return [NSString stringWithFormat:@"%lld KB", size / 1024LL];
+        }
+    } else {
+        return [NSString stringWithFormat:@"%lld B", (long long)size];
+    }
+}
+
+NSString *TGDurationString(int32_t seconds) {
+    if (seconds <= 0) return @"0:00";
+    int32_t m = seconds / 60;
+    int32_t s = seconds % 60;
+    if (m >= 60) {
+        int32_t h = m / 60;
+        m = m % 60;
+        return [NSString stringWithFormat:@"%d:%02d:%02d", h, m, s];
+    }
+    return [NSString stringWithFormat:@"%d:%02d", m, s];
+}
+
 static NSString *TGCaptionFromContent(NSDictionary *content) {
     id caption = content[@"caption"];
     if ([caption isKindOfClass:[NSDictionary class]]) {
@@ -345,9 +386,172 @@ NSString *TGMessagePreviewText(NSDictionary *content) {
 
     id content = dictionary[@"content"];
     if ([content isKindOfClass:[NSDictionary class]]) {
-        self.contentType = TGMessageContentType((NSDictionary *)content);
-        self.text = TGMessagePreviewText((NSDictionary *)content);
-        self.isService = TGMessageContentIsService((NSDictionary *)content);
+        NSDictionary *contentDict = (NSDictionary *)content;
+        self.contentType = TGMessageContentType(contentDict);
+        self.text = TGMessagePreviewText(contentDict);
+        self.isService = TGMessageContentIsService(contentDict);
+
+        if (self.isService) {
+            self.messageType = TGMessageTypeService;
+        } else if ([self.contentType isEqualToString:@"messageText"]) {
+            self.messageType = TGMessageTypeText;
+        } else if ([self.contentType isEqualToString:@"messagePhoto"]) {
+            self.messageType = TGMessageTypePhoto;
+            self.mediaCaption = TGCaptionFromContent(contentDict);
+            NSDictionary *photo = contentDict[@"photo"];
+            if ([photo isKindOfClass:[NSDictionary class]]) {
+                NSArray *sizes = photo[@"sizes"];
+                if ([sizes isKindOfClass:[NSArray class]] && sizes.count > 0) {
+                    NSDictionary *bestSize = sizes.lastObject;
+                    for (NSDictionary *size in sizes) {
+                        if ([TGStringValue(size[@"type"]) isEqualToString:@"x"] || [TGStringValue(size[@"type"]) isEqualToString:@"y"]) {
+                            bestSize = size;
+                            break;
+                        }
+                    }
+                    self.mediaFileId = TGInt32Value(bestSize[@"photo"][@"id"]);
+                    self.mediaWidth = TGInt32Value(bestSize[@"width"]);
+                    self.mediaHeight = TGInt32Value(bestSize[@"height"]);
+
+                    NSDictionary *thumbSize = sizes.firstObject;
+                    self.thumbnailFileId = TGInt32Value(thumbSize[@"photo"][@"id"]);
+                }
+                NSDictionary *minithumb = photo[@"minithumbnail"];
+                if ([minithumb isKindOfClass:[NSDictionary class]]) {
+                    NSString *dataStr = TGStringValue(minithumb[@"data"]);
+                    if (dataStr.length > 0) {
+                        self.minithumbnailData = [[NSData alloc] initWithBase64EncodedString:dataStr options:NSDataBase64DecodingIgnoreUnknownCharacters];
+                    }
+                }
+            }
+        } else if ([self.contentType isEqualToString:@"messageSticker"]) {
+            self.messageType = TGMessageTypeSticker;
+            NSDictionary *sticker = contentDict[@"sticker"];
+            if ([sticker isKindOfClass:[NSDictionary class]]) {
+                self.stickerEmoji = TGStringValue(sticker[@"emoji"]);
+                self.mediaFileId = TGInt32Value(sticker[@"sticker"][@"id"]);
+                self.mediaWidth = TGInt32Value(sticker[@"width"]);
+                self.mediaHeight = TGInt32Value(sticker[@"height"]);
+                NSDictionary *thumb = sticker[@"thumbnail"];
+                if ([thumb isKindOfClass:[NSDictionary class]]) {
+                    self.thumbnailFileId = TGInt32Value(thumb[@"file"][@"id"]);
+                }
+            }
+        } else if ([self.contentType isEqualToString:@"messageAnimation"]) {
+            self.messageType = TGMessageTypeAnimation;
+            self.mediaCaption = TGCaptionFromContent(contentDict);
+            NSDictionary *anim = contentDict[@"animation"];
+            if ([anim isKindOfClass:[NSDictionary class]]) {
+                self.mediaFileId = TGInt32Value(anim[@"animation"][@"id"]);
+                self.mediaWidth = TGInt32Value(anim[@"width"]);
+                self.mediaHeight = TGInt32Value(anim[@"height"]);
+                self.mediaDuration = TGInt32Value(anim[@"duration"]);
+                self.mediaFileName = TGStringValue(anim[@"file_name"]);
+                self.mimeType = TGStringValue(anim[@"mime_type"]);
+                NSDictionary *thumb = anim[@"thumbnail"];
+                if ([thumb isKindOfClass:[NSDictionary class]]) {
+                    self.thumbnailFileId = TGInt32Value(thumb[@"file"][@"id"]);
+                }
+                NSDictionary *minithumb = anim[@"minithumbnail"];
+                if ([minithumb isKindOfClass:[NSDictionary class]]) {
+                    NSString *dataStr = TGStringValue(minithumb[@"data"]);
+                    if (dataStr.length > 0) {
+                        self.minithumbnailData = [[NSData alloc] initWithBase64EncodedString:dataStr options:NSDataBase64DecodingIgnoreUnknownCharacters];
+                    }
+                }
+            }
+        } else if ([self.contentType isEqualToString:@"messageVideo"]) {
+            self.messageType = TGMessageTypeVideo;
+            self.mediaCaption = TGCaptionFromContent(contentDict);
+            NSDictionary *video = contentDict[@"video"];
+            if ([video isKindOfClass:[NSDictionary class]]) {
+                self.mediaFileId = TGInt32Value(video[@"video"][@"id"]);
+                self.mediaWidth = TGInt32Value(video[@"width"]);
+                self.mediaHeight = TGInt32Value(video[@"height"]);
+                self.mediaDuration = TGInt32Value(video[@"duration"]);
+                self.mediaFileName = TGStringValue(video[@"file_name"]);
+                NSDictionary *thumb = video[@"thumbnail"];
+                if ([thumb isKindOfClass:[NSDictionary class]]) {
+                    self.thumbnailFileId = TGInt32Value(thumb[@"file"][@"id"]);
+                }
+                NSDictionary *minithumb = video[@"minithumbnail"];
+                if ([minithumb isKindOfClass:[NSDictionary class]]) {
+                    NSString *dataStr = TGStringValue(minithumb[@"data"]);
+                    if (dataStr.length > 0) {
+                        self.minithumbnailData = [[NSData alloc] initWithBase64EncodedString:dataStr options:NSDataBase64DecodingIgnoreUnknownCharacters];
+                    }
+                }
+            }
+        } else if ([self.contentType isEqualToString:@"messageVoiceNote"]) {
+            self.messageType = TGMessageTypeVoiceNote;
+            self.mediaCaption = TGCaptionFromContent(contentDict);
+            NSDictionary *vn = contentDict[@"voice_note"];
+            if ([vn isKindOfClass:[NSDictionary class]]) {
+                self.mediaFileId = TGInt32Value(vn[@"voice"][@"id"]);
+                self.mediaDuration = TGInt32Value(vn[@"duration"]);
+            }
+        } else if ([self.contentType isEqualToString:@"messageAudio"]) {
+            self.messageType = TGMessageTypeAudio;
+            self.mediaCaption = TGCaptionFromContent(contentDict);
+            NSDictionary *audio = contentDict[@"audio"];
+            if ([audio isKindOfClass:[NSDictionary class]]) {
+                self.mediaFileId = TGInt32Value(audio[@"audio"][@"id"]);
+                self.mediaDuration = TGInt32Value(audio[@"duration"]);
+                self.mediaTitle = TGStringValue(audio[@"title"]);
+                self.mediaPerformer = TGStringValue(audio[@"performer"]);
+                self.mediaFileName = TGStringValue(audio[@"file_name"]);
+                self.mediaFileSize = TGInt64Value(audio[@"audio"][@"size"]);
+            }
+        } else if ([self.contentType isEqualToString:@"messageDocument"]) {
+            self.messageType = TGMessageTypeDocument;
+            self.mediaCaption = TGCaptionFromContent(contentDict);
+            NSDictionary *doc = contentDict[@"document"];
+            if ([doc isKindOfClass:[NSDictionary class]]) {
+                self.mediaFileId = TGInt32Value(doc[@"document"][@"id"]);
+                self.mediaFileName = TGStringValue(doc[@"file_name"]);
+                self.mediaFileSize = TGInt64Value(doc[@"document"][@"size"]);
+                NSDictionary *thumb = doc[@"thumbnail"];
+                if ([thumb isKindOfClass:[NSDictionary class]]) {
+                    self.thumbnailFileId = TGInt32Value(thumb[@"file"][@"id"]);
+                }
+            }
+        } else if ([self.contentType isEqualToString:@"messageContact"]) {
+            self.messageType = TGMessageTypeContact;
+            NSDictionary *contact = contentDict[@"contact"];
+            if ([contact isKindOfClass:[NSDictionary class]]) {
+                NSString *fn = TGStringValue(contact[@"first_name"]);
+                NSString *ln = TGStringValue(contact[@"last_name"]);
+                NSString *full = [NSString stringWithFormat:@"%@ %@", fn, ln];
+                self.contactName = [full stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+                self.contactPhone = TGStringValue(contact[@"phone_number"]);
+            }
+        } else if ([self.contentType isEqualToString:@"messageLocation"]) {
+            self.messageType = TGMessageTypeLocation;
+            NSDictionary *loc = contentDict[@"location"];
+            if ([loc isKindOfClass:[NSDictionary class]]) {
+                self.latitude = [loc[@"latitude"] doubleValue];
+                self.longitude = [loc[@"longitude"] doubleValue];
+            }
+        } else if ([self.contentType isEqualToString:@"messagePoll"]) {
+            self.messageType = TGMessageTypePoll;
+            NSDictionary *poll = contentDict[@"poll"];
+            if ([poll isKindOfClass:[NSDictionary class]]) {
+                self.pollQuestion = TGStringValue(poll[@"question"]);
+                NSArray *opts = poll[@"options"];
+                if ([opts isKindOfClass:[NSArray class]]) {
+                    NSMutableArray *titles = [NSMutableArray array];
+                    for (NSDictionary *opt in opts) {
+                        if ([opt isKindOfClass:[NSDictionary class]]) {
+                            NSString *t = TGStringValue(opt[@"text"]);
+                            if (t.length > 0) [titles addObject:t];
+                        }
+                    }
+                    self.pollOptions = titles;
+                }
+            }
+        } else {
+            self.messageType = TGMessageTypeUnsupported;
+        }
     }
 
     NSDictionary *sendingState = dictionary[@"sending_state"];

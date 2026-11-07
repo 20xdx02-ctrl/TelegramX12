@@ -30,7 +30,7 @@ targets:
         PRODUCT_NAME: TelegramX12
         HEADER_SEARCH_PATHS: "$(SRCROOT)/Vendor/TDLibFramework.framework/Headers"
         FRAMEWORK_SEARCH_PATHS: "$(SRCROOT)/Vendor"
-        OTHER_LDFLAGS: "-framework TDLibFramework -lc++ -lz"
+        OTHER_LDFLAGS: "-framework TDLibFramework -framework AVFoundation -framework AVKit -framework CoreMedia -lc++ -lz"
         CODE_SIGN_STYLE: Manual
         DEVELOPMENT_TEAM: ""
         PROVISIONING_PROFILE_SPECIFIER: ""

@@ -7,6 +7,7 @@ typedef void (^TGChatListBlock)(NSArray<NSNumber *> * _Nullable chatIds, NSDicti
 typedef void (^TGChatBlock)(NSDictionary * _Nullable chat, NSDictionary * _Nullable error);
 typedef void (^TGHistoryBlock)(NSArray<NSDictionary *> * _Nullable messages, NSInteger totalCount, NSDictionary * _Nullable error);
 typedef void (^TGMessageBlock)(NSDictionary * _Nullable message, NSDictionary * _Nullable error);
+typedef void (^TGFileBlock)(NSString * _Nullable localPath, NSDictionary * _Nullable file);
 
 @class TGTDLibClient;
 
@@ -48,6 +49,12 @@ typedef void (^TGMessageBlock)(NSDictionary * _Nullable message, NSDictionary * 
 - (void)viewMessages:(NSArray<NSNumber *> *)messageIds inChat:(int64_t)chatId;
 - (void)openChat:(int64_t)chatId;
 - (void)closeChat:(int64_t)chatId;
+
+- (void)downloadFileWithId:(int32_t)fileId
+                  priority:(int32_t)priority
+                completion:(nullable TGFileBlock)completion;
+- (nullable NSString *)localPathForFileId:(int32_t)fileId;
+- (nullable NSDictionary *)fileWithId:(int32_t)fileId;
 
 - (nullable NSDictionary *)chatWithId:(int64_t)chatId;
 - (nullable NSDictionary *)userWithId:(int64_t)userId;

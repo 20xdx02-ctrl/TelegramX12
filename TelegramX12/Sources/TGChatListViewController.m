@@ -294,7 +294,7 @@
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     TGChatListCell *cell = [tableView dequeueReusableCellWithIdentifier:@"TGChatListCell" forIndexPath:indexPath];
-    [cell configureWithChat:self.sortedChats[(NSUInteger)indexPath.row]];
+    [cell configureWithChat:self.sortedChats[(NSUInteger)indexPath.row] client:self.client];
     return cell;
 }
 

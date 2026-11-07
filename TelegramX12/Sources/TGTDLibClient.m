@@ -44,6 +44,9 @@ static void TGXLogLine(NSString *format, ...) {
 @property (nonatomic, strong) NSMutableDictionary<NSString *, TGResponseBlock> *completions;
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSDictionary *> *chatCache;
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSDictionary *> *userCache;
+@property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSDictionary *> *fileCache;
+@property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSString *> *localPathByFileId;
+@property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSMutableArray *> *fileCompletions;
 @property (nonatomic, strong) NSMutableSet<NSNumber *> *requestedUsers;
 @property (nonatomic, strong) dispatch_queue_t receiveQueue;
 @property (nonatomic) int clientId;
@@ -61,6 +64,9 @@ static void TGXLogLine(NSString *format, ...) {
         _completions = [NSMutableDictionary dictionary];
         _chatCache = [NSMutableDictionary dictionary];
         _userCache = [NSMutableDictionary dictionary];
+        _fileCache = [NSMutableDictionary dictionary];
+        _localPathByFileId = [NSMutableDictionary dictionary];
+        _fileCompletions = [NSMutableDictionary dictionary];
         _requestedUsers = [NSMutableSet set];
     }
     return self;
@@ -201,6 +207,15 @@ static void TGXLogLine(NSString *format, ...) {
             NSMutableDictionary *updated = [cached mutableCopy];
             updated[@"title"] = title;
             self.chatCache[@(chatId)] = updated;
+        }
+        [self.delegate tgClient:self didReceiveUpdate:dictionary];
+        return;
+    }
+
+    if ([type isEqualToString:@"updateFile"]) {
+        NSDictionary *file = dictionary[@"file"];
+        if ([file isKindOfClass:[NSDictionary class]]) {
+            [self handleFileUpdate:file];
         }
         [self.delegate tgClient:self didReceiveUpdate:dictionary];
         return;
@@ -628,6 +643,137 @@ static void TGXLogLine(NSString *format, ...) {
         }
         [weakSelf.requestedUsers removeObject:key];
     }];
+}
+
+#pragma mark - File Management
+
+- (void)handleFileUpdate:(NSDictionary *)file {
+    if (![file isKindOfClass:[NSDictionary class]]) {
+        return;
+    }
+    int32_t fileId = TGInt32Value(file[@"id"]);
+    if (fileId <= 0) {
+        return;
+    }
+    self.fileCache[@(fileId)] = file;
+
+    NSDictionary *local = file[@"local"];
+    if (![local isKindOfClass:[NSDictionary class]]) {
+        return;
+    }
+
+    BOOL completed = TGBoolValue(local[@"is_downloading_completed"]);
+    NSString *path = TGStringValue(local[@"path"]);
+    if (completed && path.length > 0 && [[NSFileManager defaultManager] fileExistsAtPath:path]) {
+        self.localPathByFileId[@(fileId)] = path;
+        [self notifyFileCompletionsForId:fileId path:path file:file];
+        return;
+    }
+
+    BOOL canDownload = TGBoolValue(local[@"can_be_downloaded"]);
+    BOOL active = TGBoolValue(local[@"is_downloading_active"]);
+    if (!completed && !canDownload && !active) {
+        // Download failed or was canceled
+        [self notifyFileCompletionsForId:fileId path:nil file:file];
+    }
+}
+
+- (void)notifyFileCompletionsForId:(int32_t)fileId path:(nullable NSString *)path file:(nullable NSDictionary *)file {
+    NSArray<TGFileBlock> *callbacks = nil;
+    @synchronized (self.fileCompletions) {
+        callbacks = [self.fileCompletions[@(fileId)] copy];
+        [self.fileCompletions removeObjectForKey:@(fileId)];
+    }
+    if (callbacks.count == 0) {
+        return;
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+        for (TGFileBlock block in callbacks) {
+            block(path, file);
+        }
+    });
+}
+
+- (void)downloadFileWithId:(int32_t)fileId
+                  priority:(int32_t)priority
+                completion:(nullable TGFileBlock)completion {
+    if (fileId <= 0) {
+        if (completion) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                completion(nil, nil);
+            });
+        }
+        return;
+    }
+
+    NSString *cachedPath = self.localPathByFileId[@(fileId)];
+    if (cachedPath.length > 0 && [[NSFileManager defaultManager] fileExistsAtPath:cachedPath]) {
+        if (completion) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                completion(cachedPath, self.fileCache[@(fileId)]);
+            });
+        }
+        return;
+    }
+
+    BOOL shouldStart = NO;
+    @synchronized (self.fileCompletions) {
+        NSMutableArray *list = self.fileCompletions[@(fileId)];
+        if (list == nil) {
+            list = [NSMutableArray array];
+            self.fileCompletions[@(fileId)] = list;
+            shouldStart = YES;
+        }
+        if (completion) {
+            [list addObject:[completion copy]];
+        }
+    }
+
+    if (!shouldStart) {
+        return;
+    }
+
+    NSDictionary *request = @{
+        @"@type": @"downloadFile",
+        @"file_id": @(fileId),
+        @"priority": @(priority > 0 ? priority : 16),
+        @"offset": @0,
+        @"limit": @0,
+        @"synchronous": @NO
+    };
+
+    __weak typeof(self) weakSelf = self;
+    [self sendRequest:request completion:^(NSDictionary *response) {
+        if ([TGStringValue(response[@"@type"]) isEqualToString:@"file"]) {
+            [weakSelf handleFileUpdate:response];
+        } else if ([TGStringValue(response[@"@type"]) isEqualToString:@"error"]) {
+            [weakSelf notifyFileCompletionsForId:fileId path:nil file:response];
+        }
+    }];
+}
+
+- (nullable NSString *)localPathForFileId:(int32_t)fileId {
+    if (fileId <= 0) {
+        return nil;
+    }
+    NSString *path = self.localPathByFileId[@(fileId)];
+    if (path.length > 0 && [[NSFileManager defaultManager] fileExistsAtPath:path]) {
+        return path;
+    }
+    NSDictionary *file = self.fileCache[@(fileId)];
+    NSDictionary *local = file[@"local"];
+    if ([local isKindOfClass:[NSDictionary class]] && TGBoolValue(local[@"is_downloading_completed"])) {
+        NSString *localPath = TGStringValue(local[@"path"]);
+        if (localPath.length > 0 && [[NSFileManager defaultManager] fileExistsAtPath:localPath]) {
+            self.localPathByFileId[@(fileId)] = localPath;
+            return localPath;
+        }
+    }
+    return nil;
+}
+
+- (nullable NSDictionary *)fileWithId:(int32_t)fileId {
+    return fileId > 0 ? self.fileCache[@(fileId)] : nil;
 }
 
 @end

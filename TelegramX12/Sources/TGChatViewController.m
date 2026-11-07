@@ -3,8 +3,11 @@
 #import "TGInputBar.h"
 #import "TGMessageCell.h"
 #import "TGModels.h"
+#import "TGPhotoViewerController.h"
 #import "TGTDLibClient.h"
 #import "TGTheme.h"
+#import <AVFoundation/AVFoundation.h>
+#import <AVKit/AVKit.h>
 
 @interface TGChatViewController () <UITableViewDataSource, UITableViewDelegate>
 @property (nonatomic, strong) TGTDLibClient *client;
@@ -19,6 +22,8 @@
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSNumber *> *messageIndexById;
 @property (nonatomic) NSInteger totalCount;
 @property (nonatomic) BOOL loadingOlder;
+@property (nonatomic) BOOL reachedOldestMessage;
+@property (nonatomic) NSInteger initialRetryCount;
 @property (nonatomic) BOOL didInitialLoad;
 @property (nonatomic) BOOL visible;
 @property (nonatomic) BOOL showSenderNames;
@@ -181,6 +186,18 @@
             [weakSelf markMessagesRead];
             [weakSelf updateSenderVisibility];
             [weakSelf updateEmptyState];
+
+            // If TDLib only returned 1 message initially because server history is still loading in background,
+            // retry automatically so the full history appears without manual refresh!
+            if (messages.count <= 1 && weakSelf.initialRetryCount < 3) {
+                weakSelf.initialRetryCount++;
+                NSTimeInterval delay = weakSelf.initialRetryCount == 1 ? 0.5 : 1.2;
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    if (weakSelf.visible) {
+                        [weakSelf loadInitialHistory];
+                    }
+                });
+            }
         });
     }];
 }
@@ -212,7 +229,7 @@
 }
 
 - (void)loadOlderHistory {
-    if (self.loadingOlder || self.messages.count == 0 || self.totalCount <= 0 || self.messages.count >= (NSUInteger)self.totalCount) {
+    if (self.loadingOlder || self.messages.count == 0 || self.reachedOldestMessage) {
         [self.refreshControl endRefreshing];
         return;
     }
@@ -240,9 +257,8 @@
                 [newMessages addObject:message];
             }
 
-            weakSelf.totalCount = MAX(totalCount, (NSInteger)weakSelf.messages.count);
             if (newMessages.count == 0) {
-                weakSelf.totalCount = (NSInteger)weakSelf.messages.count;
+                weakSelf.reachedOldestMessage = YES;
                 return;
             }
 
@@ -514,8 +530,73 @@
     if (self.showSenderNames && !message.isOutgoing && !message.isService) {
         senderName = [self.client displayNameForSender:message.raw[@"sender_id"]];
     }
-    [cell configureWithMessage:message showSender:self.showSenderNames senderName:senderName];
+    [cell configureWithMessage:message showSender:self.showSenderNames senderName:senderName client:self.client];
+
+    __weak typeof(self) weakSelf = self;
+    cell.onMediaTap = ^(TGMessage *msg) {
+        [weakSelf handleMediaTapForMessage:msg];
+    };
     return cell;
+}
+
+- (void)scrollViewDidScroll:(UIScrollView *)scrollView {
+    if (scrollView.contentOffset.y < 120.0 && !self.loadingOlder && !self.reachedOldestMessage && self.messages.count > 0 && self.didInitialLoad) {
+        [self loadOlderHistory];
+    }
+}
+
+- (void)handleMediaTapForMessage:(TGMessage *)message {
+    if (message.messageType == TGMessageTypePhoto) {
+        int32_t fileId = message.mediaFileId > 0 ? message.mediaFileId : message.thumbnailFileId;
+        NSString *path = [self.client localPathForFileId:fileId];
+        if (path.length > 0 && [[NSFileManager defaultManager] fileExistsAtPath:path]) {
+            TGPhotoViewerController *viewer = [[TGPhotoViewerController alloc] initWithImagePath:path];
+            [self presentViewController:viewer animated:YES completion:nil];
+        } else if (fileId > 0) {
+            __weak typeof(self) weakSelf = self;
+            [self.client downloadFileWithId:fileId priority:32 completion:^(NSString *downloadedPath, NSDictionary *file) {
+                if (downloadedPath.length > 0) {
+                    TGPhotoViewerController *viewer = [[TGPhotoViewerController alloc] initWithImagePath:downloadedPath];
+                    [weakSelf presentViewController:viewer animated:YES completion:nil];
+                }
+            }];
+        }
+    } else if (message.messageType == TGMessageTypeVideo || message.messageType == TGMessageTypeAnimation) {
+        int32_t fileId = message.mediaFileId;
+        NSString *path = [self.client localPathForFileId:fileId];
+        if (path.length > 0 && [[NSFileManager defaultManager] fileExistsAtPath:path]) {
+            [self playVideoAtPath:path isLooping:(message.messageType == TGMessageTypeAnimation)];
+        } else if (fileId > 0) {
+            __weak typeof(self) weakSelf = self;
+            [self.client downloadFileWithId:fileId priority:32 completion:^(NSString *downloadedPath, NSDictionary *file) {
+                if (downloadedPath.length > 0) {
+                    [weakSelf playVideoAtPath:downloadedPath isLooping:(message.messageType == TGMessageTypeAnimation)];
+                }
+            }];
+        }
+    }
+}
+
+- (void)playVideoAtPath:(NSString *)path isLooping:(BOOL)isLooping {
+    NSURL *url = [NSURL fileURLWithPath:path];
+    AVPlayer *player = [AVPlayer playerWithURL:url];
+    AVPlayerViewController *playerVC = [[AVPlayerViewController alloc] init];
+    playerVC.player = player;
+
+    if (isLooping) {
+        player.actionAtItemEnd = AVPlayerActionAtItemEndNone;
+        [[NSNotificationCenter defaultCenter] addObserverForName:AVPlayerItemDidPlayToEndTimeNotification
+                                                          object:[player currentItem]
+                                                           queue:[NSOperationQueue mainQueue]
+                                                      usingBlock:^(NSNotification *note) {
+            [player seekToTime:kCMTimeZero];
+            [player play];
+        }];
+    }
+
+    [self presentViewController:playerVC animated:YES completion:^{
+        [player play];
+    }];
 }
 
 - (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
