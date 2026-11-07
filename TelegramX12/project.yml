@@ -1,0 +1,43 @@
+name: TelegramX12
+
+options:
+  bundleIdPrefix: com.telegramx12
+  deploymentTarget:
+    iOS: "12.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+
+settings:
+  base:
+    IPHONEOS_DEPLOYMENT_TARGET: "12.0"
+    TARGETED_DEVICE_FAMILY: "1"
+    CLANG_ENABLE_OBJC_ARC: YES
+    ENABLE_BITCODE: NO
+    SWIFT_VERSION: "5.0"
+    ONLY_ACTIVE_ARCH: NO
+
+targets:
+  TelegramX12:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+      - path: Resources
+    settings:
+      base:
+        INFOPLIST_FILE: Info.plist
+        PRODUCT_BUNDLE_IDENTIFIER: com.telegramx12.app
+        PRODUCT_NAME: TelegramX12
+        HEADER_SEARCH_PATHS:
+          - "$(SRCROOT)/Vendor/TDLibFramework.framework/Headers"
+          - "$(SRCROOT)/Vendor/libwebp/include"
+        FRAMEWORK_SEARCH_PATHS: "$(SRCROOT)/Vendor"
+        OTHER_LDFLAGS: "$(SRCROOT)/Vendor/libwebp/libwebpdec.a -framework TDLibFramework -framework AVFoundation -framework AVKit -framework CoreMedia -lc++ -lz"
+        CODE_SIGN_STYLE: Manual
+        DEVELOPMENT_TEAM: ""
+        PROVISIONING_PROFILE_SPECIFIER: ""
+        CODE_SIGN_IDENTITY: ""
+        SUPPORTS_MACCATALYST: NO
+    dependencies:
+      - framework: Vendor/TDLibFramework.framework
+        embed: false

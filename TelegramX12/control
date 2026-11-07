@@ -1,0 +1,10 @@
+Package: com.telegramx12.app
+Name: Telegram X 12
+Version: 1.0.0
+Architecture: iphoneos-arm
+Description: Telegram X 12 client powered by TDLib.
+Maintainer: TelegramX12 Project
+Author: TelegramX12 Project
+Section: Applications
+Priority: optional
+Depends: firmware (>= 12.0)

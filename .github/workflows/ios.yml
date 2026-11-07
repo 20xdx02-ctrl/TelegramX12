@@ -1,0 +1,75 @@
+name: Build TelegramX12
+
+on:
+  push:
+    branches:
+      - telegramx12
+      - master
+  workflow_dispatch:
+
+jobs:
+  build:
+    # macos-14 was retired on 2026-11-02. macos-15 (arm64, Xcode 16.4 by
+    # default) still supports an iOS 12.0 deployment target.
+    runs-on: macos-15
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          if [ -d /Applications/Xcode_16.4.app ]; then
+            sudo xcode-select -s /Applications/Xcode_16.4.app
+          fi
+          xcodebuild -version
+          xcodebuild -showsdks
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: TelegramX12
+        run: xcodegen generate
+
+      - name: Build unsigned app
+        working-directory: TelegramX12
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project TelegramX12.xcodeproj \
+            -scheme TelegramX12 \
+            -configuration Release \
+            -sdk iphoneos \
+            -arch arm64 \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            | tee build.log
+
+      - name: Create unsigned IPA
+        working-directory: TelegramX12
+        run: |
+          APP="build/Build/Products/Release-iphoneos/TelegramX12.app"
+          test -d "$APP"
+          mkdir -p Payload
+          cp -R "$APP" Payload/TelegramX12.app
+          zip -qry TelegramX12-unsigned.ipa Payload
+          ls -lh TelegramX12-unsigned.ipa
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: TelegramX12-unsigned-ipa
+          path: TelegramX12/TelegramX12-unsigned.ipa
+          if-no-files-found: error
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: TelegramX12/build.log
+          if-no-files-found: ignore

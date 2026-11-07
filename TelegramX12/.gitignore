@@ -1,0 +1,10 @@
+.theos/
+packages/
+build/
+DerivedData/
+Payload/
+*.deb
+*.ipa
+*.dSYM/
+*.dSYM.zip
+compile_commands.json
