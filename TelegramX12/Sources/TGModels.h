@@ -75,6 +75,8 @@ FOUNDATION_EXPORT NSString *TGDurationString(int32_t seconds);
 @property (nonatomic) BOOL isService;
 @property (nonatomic) BOOL isSending;
 @property (nonatomic) BOOL isFailed;
+/// Synthetic in-memory row marking the first unread message (no TDLib id).
+@property (nonatomic) BOOL isUnreadDivider;
 @property (nonatomic) int64_t senderId;
 @property (nonatomic) BOOL senderIsUser;
 @property (nonatomic, strong) NSDictionary *raw;

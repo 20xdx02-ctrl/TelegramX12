@@ -8,6 +8,7 @@ typedef void (^TGChatBlock)(NSDictionary * _Nullable chat, NSDictionary * _Nulla
 typedef void (^TGHistoryBlock)(NSArray<NSDictionary *> * _Nullable messages, NSInteger totalCount, NSDictionary * _Nullable error);
 typedef void (^TGMessageBlock)(NSDictionary * _Nullable message, NSDictionary * _Nullable error);
 typedef void (^TGFileBlock)(NSString * _Nullable localPath, NSDictionary * _Nullable file);
+typedef void (^TGStickerSectionsBlock)(NSArray<NSDictionary *> * _Nullable sections, NSDictionary * _Nullable error);
 
 @class TGTDLibClient;
 
@@ -50,6 +51,13 @@ typedef void (^TGFileBlock)(NSString * _Nullable localPath, NSDictionary * _Null
                  toChat:(int64_t)chatId
                 caption:(nullable NSString *)caption
              completion:(nullable TGMessageBlock)completion;
+/// Loads sticker picker sections: "Ulubione", "Ostatnie" and installed packs.
+/// Each section is a dictionary with "title" (NSString) and "stickers" (array
+/// of TDLib `sticker` objects).
+- (void)loadStickerSectionsWithCompletion:(nullable TGStickerSectionsBlock)completion;
+- (void)sendSticker:(NSDictionary *)sticker
+              toChat:(int64_t)chatId
+          completion:(nullable TGMessageBlock)completion;
 - (void)viewMessages:(NSArray<NSNumber *> *)messageIds inChat:(int64_t)chatId;
 - (void)openChat:(int64_t)chatId;
 - (void)closeChat:(int64_t)chatId;

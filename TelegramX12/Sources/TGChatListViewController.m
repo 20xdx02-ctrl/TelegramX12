@@ -294,25 +294,45 @@
         return NSOrderedSame;
     }];
     self.sortedChats = visible;
-    self.emptyLabel.hidden = self.sortedChats.count > 0;
+    [self applySearchFilter];
+    self.emptyLabel.hidden = self.filteredChats.count > 0;
+    [self.tableView reloadData];
+}
+
+- (void)applySearchFilter {
+    NSString *query = [self.searchQuery stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (query.length == 0) {
+        self.filteredChats = self.sortedChats;
+        return;
+    }
+    self.filteredChats = [self.sortedChats filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(TGChat *chat, NSDictionary *bindings) {
+        return [chat.title rangeOfString:query options:NSCaseInsensitiveSearch].location != NSNotFound ||
+               [chat.lastMessageText rangeOfString:query options:NSCaseInsensitiveSearch].location != NSNotFound;
+    }]];
+}
+
+- (void)updateSearchResultsForSearchController:(UISearchController *)searchController {
+    self.searchQuery = searchController.searchBar.text ?: @"";
+    [self applySearchFilter];
+    self.emptyLabel.hidden = self.filteredChats.count > 0;
     [self.tableView reloadData];
 }
 
 #pragma mark - UITableView
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    return (NSInteger)self.sortedChats.count;
+    return (NSInteger)self.filteredChats.count;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     TGChatListCell *cell = [tableView dequeueReusableCellWithIdentifier:@"TGChatListCell" forIndexPath:indexPath];
-    [cell configureWithChat:self.sortedChats[(NSUInteger)indexPath.row] client:self.client];
+    [cell configureWithChat:self.filteredChats[(NSUInteger)indexPath.row] client:self.client];
     return cell;
 }
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
-    TGChat *chat = self.sortedChats[(NSUInteger)indexPath.row];
+    TGChat *chat = self.filteredChats[(NSUInteger)indexPath.row];
     TGChatViewController *controller = [[TGChatViewController alloc] initWithClient:self.client
                                                                             chatId:chat.chatId
                                                                              title:chat.title];

@@ -33,6 +33,10 @@ static const CGFloat TGMessageCellTextSize = 16.0;
 @property (nonatomic, strong) UIView *stickerTimePill;
 @property (nonatomic, strong) UILabel *stickerTimeLabel;
 
+// Unread divider bar (synthetic "Nieprzeczytane" row)
+@property (nonatomic, strong) UIView *unreadBarView;
+@property (nonatomic, strong) UILabel *unreadBarLabel;
+
 // File / Audio / Extra views
 @property (nonatomic, strong) UIView *docIconView;
 @property (nonatomic, strong) UILabel *docIconLabel;
@@ -182,6 +186,21 @@ static const CGFloat TGMessageCellTextSize = 16.0;
         _serviceLabel.textAlignment = NSTextAlignmentCenter;
         _serviceLabel.numberOfLines = 0;
         [self.contentView addSubview:_serviceLabel];
+
+        // Unread divider bar (styled like Telegram X's unread bar)
+        _unreadBarView = [[UIView alloc] initWithFrame:CGRectZero];
+        _unreadBarView.backgroundColor = [TGTheme accentColor];
+        _unreadBarView.layer.cornerRadius = 13.0;
+        _unreadBarView.clipsToBounds = YES;
+        _unreadBarView.hidden = YES;
+        [self.contentView addSubview:_unreadBarView];
+
+        _unreadBarLabel = [[UILabel alloc] initWithFrame:_unreadBarView.bounds];
+        _unreadBarLabel.font = [TGTheme semiboldFontOfSize:13.0];
+        _unreadBarLabel.textColor = [UIColor whiteColor];
+        _unreadBarLabel.textAlignment = NSTextAlignmentCenter;
+        _unreadBarLabel.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        [_unreadBarView addSubview:_unreadBarLabel];
     }
     return self;
 }
@@ -211,6 +230,7 @@ static const CGFloat TGMessageCellTextSize = 16.0;
     self.senderLabel.text = nil;
     self.timeLabel.text = nil;
     self.serviceLabel.text = nil;
+    self.unreadBarView.hidden = YES;
     self.docTitleLabel.text = nil;
     self.docSubtitleLabel.text = nil;
 }
@@ -282,6 +302,10 @@ static const CGFloat TGMessageCellTextSize = 16.0;
 }
 
 + (CGFloat)heightForMessage:(TGMessage *)message width:(CGFloat)width showSender:(BOOL)showSender {
+    if (message.isUnreadDivider) {
+        return 36.0;
+    }
+
     if (message.isService) {
         return 32.0;
     }
@@ -327,6 +351,20 @@ static const CGFloat TGMessageCellTextSize = 16.0;
     self.showSender = showSender;
     self.senderName = senderName;
     self.currentMessageId = message.messageId;
+
+    if (message.isUnreadDivider) {
+        _unreadBarView.hidden = NO;
+        _unreadBarLabel.text = message.text.length > 0 ? message.text : @"Nieprzeczytane wiadomości";
+        _serviceLabel.hidden = YES;
+        _bubbleView.hidden = YES;
+        _stickerImageView.hidden = YES;
+        _stickerEmojiLabel.hidden = YES;
+        _stickerTimePill.hidden = YES;
+        [self setNeedsLayout];
+        return;
+    }
+
+    _unreadBarView.hidden = YES;
 
     if (message.isService) {
         _serviceLabel.hidden = NO;
@@ -690,6 +728,15 @@ static const CGFloat TGMessageCellTextSize = 16.0;
 
     CGFloat width = CGRectGetWidth(self.contentView.bounds);
     if (self.message == nil || width <= 0) {
+        return;
+    }
+
+    if (self.message.isUnreadDivider) {
+        CGFloat barWidth = width - 32.0;
+        self.unreadBarView.frame = CGRectMake(16.0,
+                                              floor((CGRectGetHeight(self.contentView.bounds) - 26.0) / 2.0),
+                                              barWidth,
+                                              26.0);
         return;
     }
 

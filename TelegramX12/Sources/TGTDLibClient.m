@@ -212,6 +212,23 @@ static void TGXLogLine(NSString *format, ...) {
         return;
     }
 
+    if ([type isEqualToString:@"updateChatReadInbox"]) {
+        int64_t chatId = TGInt64Value(dictionary[@"chat_id"]);
+        NSDictionary *cached = self.chatCache[@(chatId)];
+        if (cached != nil) {
+            NSMutableDictionary *updated = [cached mutableCopy];
+            if (dictionary[@"last_read_inbox_message_id"] != nil) {
+                updated[@"last_read_inbox_message_id"] = dictionary[@"last_read_inbox_message_id"];
+            }
+            if (dictionary[@"unread_count"] != nil) {
+                updated[@"unread_count"] = dictionary[@"unread_count"];
+            }
+            self.chatCache[@(chatId)] = updated;
+        }
+        [self.delegate tgClient:self didReceiveUpdate:dictionary];
+        return;
+    }
+
     if ([type isEqualToString:@"updateFile"]) {
         NSDictionary *file = dictionary[@"file"];
         if ([file isKindOfClass:[NSDictionary class]]) {
@@ -578,6 +595,132 @@ static void TGXLogLine(NSString *format, ...) {
             return;
         }
         if (completion != nil) {
+            completion(nil, response);
+        }
+    }];
+}
+
+static NSArray<NSDictionary *> *TGStickerObjects(id value) {
+    NSMutableArray<NSDictionary *> *result = [NSMutableArray array];
+    if ([value isKindOfClass:[NSArray class]]) {
+        for (id object in value) {
+            if ([object isKindOfClass:[NSDictionary class]]) {
+                [result addObject:object];
+            }
+        }
+    }
+    return result;
+}
+
+static int32_t TGStickerFileId(NSDictionary *sticker) {
+    return TGInt32Value(sticker[@"sticker"][@"id"]);
+}
+
+- (void)loadStickerSectionsWithCompletion:(TGStickerSectionsBlock)completion {
+    __weak typeof(self) weakSelf = self;
+    [self sendRequest:@{@"@type": @"getFavoriteStickers"} completion:^(NSDictionary *favoriteResponse) {
+        NSMutableArray<NSDictionary *> *sections = [NSMutableArray array];
+        NSArray<NSDictionary *> *favorites = TGStickerObjects(favoriteResponse[@"stickers"]);
+        if (favorites.count > 0) {
+            [sections addObject:@{@"title": @"Ulubione", @"stickers": favorites}];
+        }
+
+        [weakSelf sendRequest:@{@"@type": @"getRecentStickers", @"is_attached": @NO} completion:^(NSDictionary *recentResponse) {
+            NSMutableSet<NSNumber *> *seen = [NSMutableSet set];
+            for (NSDictionary *sticker in favorites) {
+                int32_t fileId = TGStickerFileId(sticker);
+                if (fileId > 0) {
+                    [seen addObject:@(fileId)];
+                }
+            }
+            NSMutableArray<NSDictionary *> *recent = [NSMutableArray array];
+            for (NSDictionary *sticker in TGStickerObjects(recentResponse[@"stickers"])) {
+                int32_t fileId = TGStickerFileId(sticker);
+                if (fileId > 0 && [seen containsObject:@(fileId)]) {
+                    continue;
+                }
+                if (fileId > 0) {
+                    [seen addObject:@(fileId)];
+                }
+                [recent addObject:sticker];
+            }
+            if (recent.count > 0) {
+                [sections addObject:@{@"title": @"Ostatnie", @"stickers": recent}];
+            }
+
+            [weakSelf sendRequest:@{@"@type": @"getInstalledStickerSets", @"is_masks": @NO} completion:^(NSDictionary *setsResponse) {
+                NSArray *setIds = setsResponse[@"sticker_set_ids"];
+                if (![setIds isKindOfClass:[NSArray class]] || setIds.count == 0) {
+                    if (completion != nil) {
+                        completion(sections, nil);
+                    }
+                    return;
+                }
+
+                // Bound the number of packs so opening the picker never fans
+                // out into dozens of getStickerSet requests.
+                NSUInteger limit = MIN(setIds.count, (NSUInteger)12);
+                NSArray *packIds = [setIds subarrayWithRange:NSMakeRange(0, limit)];
+
+                dispatch_group_t group = dispatch_group_create();
+                NSMutableDictionary<NSNumber *, NSDictionary *> *packs = [NSMutableDictionary dictionary];
+                for (NSUInteger index = 0; index < packIds.count; index++) {
+                    NSNumber *packIndex = @(index);
+                    dispatch_group_enter(group);
+                    [weakSelf sendRequest:@{@"@type": @"getStickerSet", @"set_id": packIds[index]} completion:^(NSDictionary *setResponse) {
+                        NSArray<NSDictionary *> *stickers = TGStickerObjects(setResponse[@"stickers"]);
+                        if (stickers.count > 0) {
+                            NSString *title = TGStringValue(setResponse[@"title"]);
+                            packs[packIndex] = @{
+                                @"title": title.length > 0 ? title : @"Stickery",
+                                @"stickers": stickers
+                            };
+                        }
+                        dispatch_group_leave(group);
+                    }];
+                }
+
+                dispatch_group_notify(group, dispatch_get_main_queue(), ^{
+                    for (NSUInteger index = 0; index < packIds.count; index++) {
+                        NSDictionary *section = packs[@(index)];
+                        if (section != nil) {
+                            [sections addObject:section];
+                        }
+                    }
+                    if (completion != nil) {
+                        completion(sections, nil);
+                    }
+                });
+            }];
+        }];
+    }];
+}
+
+- (void)sendSticker:(NSDictionary *)sticker
+              toChat:(int64_t)chatId
+          completion:(TGMessageBlock)completion {
+    NSDictionary *file = sticker[@"sticker"];
+    int32_t fileId = TGInt32Value(file[@"id"]);
+    if (fileId <= 0 || chatId == 0) {
+        if (completion != nil) {
+            completion(nil, @{@"@type": @"error", @"message": @"Nieprawidłowy sticker."});
+        }
+        return;
+    }
+
+    NSDictionary *content = @{
+        @"@type": @"inputMessageSticker",
+        @"sticker": @{@"@type": @"inputFileId", @"id": @(fileId)},
+        @"width": @(MAX(1, TGInt32Value(sticker[@"width"]))),
+        @"height": @(MAX(1, TGInt32Value(sticker[@"height"]))),
+        @"emoji": TGStringValue(sticker[@"emoji"])
+    };
+    [self sendRequest:@{@"@type": @"sendMessage", @"chat_id": @(chatId), @"input_message_content": content} completion:^(NSDictionary *response) {
+        if ([TGStringValue(response[@"@type"]) isEqualToString:@"message"]) {
+            if (completion != nil) {
+                completion(response, nil);
+            }
+        } else if (completion != nil) {
             completion(nil, response);
         }
     }];

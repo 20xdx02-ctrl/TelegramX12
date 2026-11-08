@@ -4,6 +4,7 @@
 #import "TGMessageCell.h"
 #import "TGModels.h"
 #import "TGPhotoViewerController.h"
+#import "TGStickerPickerView.h"
 #import "TGTDLibClient.h"
 #import "TGTheme.h"
 #import <AVFoundation/AVFoundation.h>
@@ -13,12 +14,21 @@
 @property (nonatomic, strong) TGTDLibClient *client;
 @property (nonatomic) int64_t chatId;
 @property (nonatomic) int64_t lastReadOutboxMessageId;
+@property (nonatomic) int64_t lastReadInboxMessageId;
+@property (nonatomic) int32_t unreadCountAtOpen;
+@property (nonatomic) BOOL didCaptureReadState;
+@property (nonatomic, strong, nullable) TGMessage *unreadDividerMessage;
 @property (nonatomic, strong) UIView *titleHeaderView;
 @property (nonatomic, strong) UILabel *titleHeaderLabel;
 @property (nonatomic, strong) UILabel *subtitleHeaderLabel;
 @property (nonatomic, strong) UITableView *tableView;
 @property (nonatomic, strong) TGInputBar *inputBar;
 @property (nonatomic, strong) NSLayoutConstraint *inputBottomConstraint;
+@property (nonatomic, strong) NSLayoutConstraint *tableBottomToInputConstraint;
+@property (nonatomic, strong) NSLayoutConstraint *tableBottomToPickerConstraint;
+@property (nonatomic, strong) NSLayoutConstraint *pickerBottomConstraint;
+@property (nonatomic, strong) TGStickerPickerView *stickerPickerView;
+@property (nonatomic) BOOL stickerPickerVisible;
 @property (nonatomic, strong) UIRefreshControl *refreshControl;
 @property (nonatomic, strong) UILabel *emptyLabel;
 @property (nonatomic, strong) UIActivityIndicatorView *spinner;
@@ -118,12 +128,13 @@
 
     UILayoutGuide *safe = self.view.safeAreaLayoutGuide;
     self.inputBottomConstraint = [self.inputBar.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor];
+    self.tableBottomToInputConstraint = [self.tableView.bottomAnchor constraintEqualToAnchor:self.inputBar.topAnchor];
 
     [NSLayoutConstraint activateConstraints:@[
         [self.tableView.topAnchor constraintEqualToAnchor:safe.topAnchor],
         [self.tableView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [self.tableView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
-        [self.tableView.bottomAnchor constraintEqualToAnchor:self.inputBar.topAnchor],
+        self.tableBottomToInputConstraint,
 
         [self.inputBar.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [self.inputBar.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
@@ -153,10 +164,30 @@
     [super viewWillAppear:animated];
     self.navigationController.navigationBar.prefersLargeTitles = NO;
     self.visible = YES;
+
+    // Capture the read boundary before openChat/viewMessages can move it, so
+    // the initial history load still knows where the first unread message is.
+    if (!self.didCaptureReadState) {
+        self.didCaptureReadState = YES;
+        NSDictionary *chat = [self.client chatWithId:self.chatId];
+        if (chat != nil) {
+            self.lastReadInboxMessageId = TGInt64Value(chat[@"last_read_inbox_message_id"]);
+            self.unreadCountAtOpen = TGInt32Value(chat[@"unread_count"]);
+        }
+    }
+
     [self.client openChat:self.chatId];
     if (!self.didInitialLoad) {
         [self loadInitialHistory];
     } else {
+        // Re-entering an already open chat: everything on screen was read on
+        // the previous visit, so drop the divider and show the latest state.
+        if (self.unreadDividerMessage != nil) {
+            [self removeUnreadDivider];
+            [self.tableView reloadData];
+            [self.tableView layoutIfNeeded];
+            [self scrollToBottomAnimated:NO];
+        }
         [self markMessagesRead];
     }
 }
@@ -164,6 +195,7 @@
 - (void)viewWillDisappear:(BOOL)animated {
     [super viewWillDisappear:animated];
     self.visible = NO;
+    [self hideStickerPickerAnimated:NO];
     [self.client closeChat:self.chatId];
 }
 
@@ -209,9 +241,14 @@
                 return;
             }
             [weakSelf replaceMessagesWithDictionaries:messages totalCount:totalCount];
+            [weakSelf placeUnreadDividerIfNeeded];
             [weakSelf.tableView reloadData];
             [weakSelf.tableView layoutIfNeeded];
-            [weakSelf scrollToBottomAnimated:NO];
+            if (weakSelf.unreadDividerMessage != nil) {
+                [weakSelf scrollToUnreadDividerAnimated:NO];
+            } else {
+                [weakSelf scrollToBottomAnimated:NO];
+            }
             [weakSelf markMessagesRead];
             [weakSelf updateSenderVisibility];
             [weakSelf updateEmptyState];
@@ -267,7 +304,20 @@
     }
     self.loadingOlder = YES;
 
-    TGMessage *oldest = self.messages.firstObject;
+    // The synthetic unread divider carries no TDLib id; older history must be
+    // requested relative to the oldest real message.
+    TGMessage *oldest = nil;
+    for (TGMessage *candidate in self.messages) {
+        if (candidate.messageId > 0) {
+            oldest = candidate;
+            break;
+        }
+    }
+    if (oldest == nil) {
+        self.loadingOlder = NO;
+        [self.refreshControl endRefreshing];
+        return;
+    }
     CGFloat oldHeight = self.tableView.contentSize.height;
     CGFloat oldOffsetY = self.tableView.contentOffset.y;
 
@@ -324,6 +374,75 @@
     [self.messages enumerateObjectsUsingBlock:^(TGMessage *message, NSUInteger index, BOOL *stop) {
         self.messageIndexById[@(message.messageId)] = @(index);
     }];
+}
+
+#pragma mark - Unread divider
+
+/// Inserts a synthetic "Nieprzeczytane" row right before the oldest message
+/// that was unread when the chat was opened (mirrors Telegram X's
+/// ChatUnreadItem placed at the unread boundary).
+- (void)placeUnreadDividerIfNeeded {
+    [self removeUnreadDivider];
+
+    if (self.unreadCountAtOpen <= 0) {
+        return;
+    }
+
+    TGMessage *firstUnread = nil;
+    for (TGMessage *message in self.messages) {
+        if (message.isOutgoing || message.isService) {
+            continue;
+        }
+        if (message.messageId > self.lastReadInboxMessageId) {
+            firstUnread = message;
+            break;
+        }
+    }
+    if (firstUnread == nil) {
+        return;
+    }
+
+    NSUInteger index = [self.messages indexOfObjectIdenticalTo:firstUnread];
+    if (index == NSNotFound) {
+        return;
+    }
+
+    TGMessage *divider = [[TGMessage alloc] init];
+    divider.messageId = 0;
+    divider.chatId = self.chatId;
+    divider.date = firstUnread.date;
+    divider.isOutgoing = NO;
+    divider.isService = YES;
+    divider.isUnreadDivider = YES;
+    divider.messageType = TGMessageTypeService;
+    divider.text = @"Nieprzeczytane wiadomości";
+
+    [self.messages insertObject:divider atIndex:index];
+    self.unreadDividerMessage = divider;
+    [self rebuildMessageIndex];
+}
+
+- (void)removeUnreadDivider {
+    TGMessage *divider = self.unreadDividerMessage;
+    if (divider == nil) {
+        return;
+    }
+    self.unreadDividerMessage = nil;
+    NSUInteger index = [self.messages indexOfObjectIdenticalTo:divider];
+    if (index != NSNotFound) {
+        [self.messages removeObjectAtIndex:index];
+        [self rebuildMessageIndex];
+    }
+}
+
+- (void)scrollToUnreadDividerAnimated:(BOOL)animated {
+    NSUInteger index = [self.messages indexOfObjectIdenticalTo:self.unreadDividerMessage];
+    if (index == NSNotFound) {
+        [self scrollToBottomAnimated:animated];
+        return;
+    }
+    NSIndexPath *indexPath = [NSIndexPath indexPathForRow:(NSInteger)index inSection:0];
+    [self.tableView scrollToRowAtIndexPath:indexPath atScrollPosition:UITableViewScrollPositionTop animated:animated];
 }
 
 - (void)markMessagesRead {
@@ -564,12 +683,130 @@
             [self presentViewController:picker animated:YES completion:nil];
         }]];
     }
+    __weak typeof(self) weakSelf = self;
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Stickery" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        [weakSelf toggleStickerPicker];
+    }]];
     [sheet addAction:[UIAlertAction actionWithTitle:@"Anuluj" style:UIAlertActionStyleCancel handler:nil]];
     if (sheet.popoverPresentationController != nil) {
         sheet.popoverPresentationController.sourceView = self.inputBar;
         sheet.popoverPresentationController.sourceRect = self.inputBar.bounds;
     }
     [self presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)toggleStickerPicker {
+    if (self.stickerPickerVisible) {
+        [self hideStickerPickerAnimated:YES];
+    } else {
+        [self showStickerPickerAnimated:YES];
+    }
+}
+
+/// Shows the sticker grid panel above the input bar (Telegram X style): the
+/// message list shrinks so the last messages stay visible above the panel.
+- (void)showStickerPickerAnimated:(BOOL)animated {
+    if (self.stickerPickerVisible) {
+        return;
+    }
+    [self.inputBar.textField resignFirstResponder];
+
+    if (self.stickerPickerView == nil) {
+        TGStickerPickerView *picker = [[TGStickerPickerView alloc] initWithClient:self.client];
+        picker.translatesAutoresizingMaskIntoConstraints = NO;
+        [self.view insertSubview:picker belowSubview:self.inputBar];
+
+        self.pickerBottomConstraint = [picker.bottomAnchor constraintEqualToAnchor:self.inputBar.topAnchor];
+        [NSLayoutConstraint activateConstraints:@[
+            [picker.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+            [picker.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+            [picker.heightAnchor constraintEqualToConstant:280.0],
+            self.pickerBottomConstraint
+        ]];
+
+        __weak typeof(self) weakSelf = self;
+        picker.onSelectSticker = ^(NSDictionary *sticker) {
+            [weakSelf hideStickerPickerAnimated:YES];
+            [weakSelf sendSticker:sticker];
+        };
+        picker.onClose = ^{
+            [weakSelf hideStickerPickerAnimated:YES];
+        };
+        self.stickerPickerView = picker;
+    }
+
+    if (self.tableBottomToPickerConstraint == nil) {
+        self.tableBottomToPickerConstraint = [self.tableView.bottomAnchor constraintEqualToAnchor:self.stickerPickerView.topAnchor];
+    }
+
+    self.tableBottomToInputConstraint.active = NO;
+    self.tableBottomToPickerConstraint.active = YES;
+    self.stickerPickerVisible = YES;
+    self.stickerPickerView.hidden = NO;
+    self.stickerPickerView.transform = CGAffineTransformMakeTranslation(0.0, 280.0);
+    [self.stickerPickerView reloadFromServer];
+
+    void (^animations)(void) = ^{
+        self.stickerPickerView.transform = CGAffineTransformIdentity;
+        [self.view layoutIfNeeded];
+    };
+    if (animated) {
+        [UIView animateWithDuration:0.25
+                              delay:0.0
+                            options:UIViewAnimationOptionCurveEaseOut
+                         animations:animations
+                         completion:nil];
+    } else {
+        animations();
+    }
+
+    if ([self isNearBottom]) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self scrollToBottomAnimated:YES];
+        });
+    }
+}
+
+- (void)hideStickerPickerAnimated:(BOOL)animated {
+    if (!self.stickerPickerVisible || self.stickerPickerView == nil) {
+        return;
+    }
+    self.stickerPickerVisible = NO;
+    self.tableBottomToPickerConstraint.active = NO;
+    self.tableBottomToInputConstraint.active = YES;
+
+    __weak typeof(self) weakSelf = self;
+    void (^animations)(void) = ^{
+        weakSelf.stickerPickerView.transform = CGAffineTransformMakeTranslation(0.0, 280.0);
+        [weakSelf.view layoutIfNeeded];
+    };
+    void (^finish)(void) = ^{
+        weakSelf.stickerPickerView.hidden = YES;
+        weakSelf.stickerPickerView.transform = CGAffineTransformIdentity;
+    };
+    if (animated) {
+        [UIView animateWithDuration:0.25
+                              delay:0.0
+                            options:UIViewAnimationOptionCurveEaseIn
+                         animations:animations
+                         completion:^(BOOL finished) {
+            finish();
+        }];
+    } else {
+        animations();
+        finish();
+    }
+}
+
+- (void)sendSticker:(NSDictionary *)sticker {
+    __weak typeof(self) weakSelf = self;
+    [self.client sendSticker:sticker toChat:self.chatId completion:^(NSDictionary *message, NSDictionary *error) {
+        if (message != nil) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [weakSelf upsertMessageDictionary:message scrollToBottom:YES forceScroll:YES];
+            });
+        }
+    }];
 }
 
 - (void)imagePickerController:(UIImagePickerController *)picker didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey,id> *)info {
@@ -772,6 +1009,9 @@
     [UIView commitAnimations];
 
     if (offset > 0.0) {
+        // The keyboard takes over the panel area; Telegram X closes the
+        // sticker pane the same way when the text field gets focus.
+        [self hideStickerPickerAnimated:NO];
         dispatch_async(dispatch_get_main_queue(), ^{
             [self scrollToBottomAnimated:YES];
         });

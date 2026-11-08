@@ -10,15 +10,17 @@ Aplikacja jest napisana w Objective-C/UIKit i buduje się lokalnie przez **Theos
 - kod z wiadomości/SMS/połączenia,
 - hasło dwuetapowe,
 - rejestracja nowego konta i akceptacja regulaminu,
-- lista czatów z sortowaniem, przypięciami i licznikiem nieprzeczytanych,
+- lista czatów z sortowaniem, przypięciami, licznikiem nieprzeczytanych i wyszukiwaniem,
 - historia wiadomości (ładowanie starszych przez pull-to-refresh),
-- wysyłanie wiadomości tekstowych,
+- otwieranie czatu od **pierwszej nieprzeczytanej wiadomości** — separator „Nieprzeczytane" jak `ChatUnreadItem` w Telegramie X,
+- wysyłanie wiadomości tekstowych, zdjęć i stickerów,
+- wybierak stickerów (ulubione, ostatnio używane, zainstalowane paczki) w postaci panelu nad paskiem wpisywania,
 - oznaczanie wiadomości jako przeczytane,
 - aktualizacje w czasie rzeczywistym (nowe wiadomości, zmiany pozycji czatu, tytułu, licznika),
 - ekran ustawień `api_id` / `api_hash` oraz wylogowanie,
 - dane TDLib w `Library/Application Support/TelegramX12`.
 
-Czego jeszcze nie ma: avatary i pobieranie plików, zdjęcia/wideo/stickery, powiadomienia push, wyszukiwanie, drafts, tematy, zarządzanie grupami, połączenia. To jest baza pod dalszy rozwój, a nie pełny klon Telegrama.
+Czego jeszcze nie ma: avatary (wyświetlane są inicjały) i pobieranie plików/dokumentów, powiadomienia push, drafts, tematy, zarządzanie grupami, połączenia. To jest baza pod dalszy rozwój, a nie pełny klon Telegrama.
 
 ## Ważne: własne `api_id` i `api_hash`
 
