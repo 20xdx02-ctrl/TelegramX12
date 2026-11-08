@@ -1,13 +1,14 @@
 #import "TGChatListViewController.h"
 
 #import "TGChatListCell.h"
+#import "TGChatPlaceholderViewController.h"
 #import "TGChatViewController.h"
 #import "TGModels.h"
 #import "TGSettingsViewController.h"
 #import "TGTDLibClient.h"
 #import "TGTheme.h"
 
-@interface TGChatListViewController () <UITableViewDataSource, UITableViewDelegate, UISearchResultsUpdating>
+@interface TGChatListViewController () <UITableViewDataSource, UITableViewDelegate, UISearchResultsUpdating, UISplitViewControllerDelegate>
 @property (nonatomic, strong) TGTDLibClient *client;
 @property (nonatomic, strong) UITableView *tableView;
 @property (nonatomic, strong) UIRefreshControl *refreshControl;
@@ -53,6 +54,8 @@
     self.navigationItem.searchController = self.searchController;
     self.definesPresentationContext = YES;
 
+    self.splitViewController.delegate = self;
+
     self.tableView = [[UITableView alloc] initWithFrame:CGRectZero style:UITableViewStylePlain];
     self.tableView.translatesAutoresizingMaskIntoConstraints = NO;
     self.tableView.dataSource = self;
@@ -90,13 +93,13 @@
         [self.tableView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
         [self.tableView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
 
-        [self.emptyLabel.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
-        [self.emptyLabel.centerYAnchor constraintEqualToAnchor:self.view.centerYAnchor],
-        [self.emptyLabel.leadingAnchor constraintGreaterThanOrEqualToAnchor:self.view.leadingAnchor constant:32.0],
-        [self.emptyLabel.trailingAnchor constraintLessThanOrEqualToAnchor:self.view.trailingAnchor constant:-32.0],
+        [self.emptyLabel.centerXAnchor constraintEqualToAnchor:self.tableView.centerXAnchor],
+        [self.emptyLabel.centerYAnchor constraintEqualToAnchor:self.tableView.centerYAnchor],
+        [self.emptyLabel.leadingAnchor constraintGreaterThanOrEqualToAnchor:self.tableView.leadingAnchor constant:32.0],
+        [self.emptyLabel.trailingAnchor constraintLessThanOrEqualToAnchor:self.tableView.trailingAnchor constant:-32.0],
 
-        [self.spinner.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
-        [self.spinner.centerYAnchor constraintEqualToAnchor:self.view.centerYAnchor]
+        [self.spinner.centerXAnchor constraintEqualToAnchor:self.tableView.centerXAnchor],
+        [self.spinner.centerYAnchor constraintEqualToAnchor:self.tableView.centerYAnchor]
     ]];
 
     [self loadChats];
@@ -336,7 +339,28 @@
     TGChatViewController *controller = [[TGChatViewController alloc] initWithClient:self.client
                                                                             chatId:chat.chatId
                                                                              title:chat.title];
+    if (self.splitViewController != nil) {
+        // iPad two pane layout: replace the detail column, keep the list.
+        controller.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
+        UINavigationController *detail = [[UINavigationController alloc] initWithRootViewController:controller];
+        [self.splitViewController showDetailViewController:detail sender:self];
+        return;
+    }
     [self.navigationController pushViewController:controller animated:YES];
+}
+
+#pragma mark - UISplitViewControllerDelegate
+
+/// On compact sizes the split merges the detail column onto the navigation
+/// stack. Throw away the placeholder, keep an open chat.
+- (BOOL)splitViewController:(UISplitViewController *)splitViewController
+ collapseSecondaryViewController:(UIViewController *)secondaryViewController
+    ontoPrimaryViewController:(UIViewController *)primaryViewController {
+    if (![secondaryViewController isKindOfClass:[UINavigationController class]]) {
+        return NO;
+    }
+    UIViewController *top = ((UINavigationController *)secondaryViewController).viewControllers.firstObject;
+    return [top isKindOfClass:[TGChatPlaceholderViewController class]];
 }
 
 #pragma mark - Settings

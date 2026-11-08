@@ -572,9 +572,15 @@ static void TGXLogLine(NSString *format, ...) {
     }
     NSDictionary *content = @{
         @"@type": @"inputMessagePhoto",
+        // TDLib 1.8 wraps the file in an inputPhoto struct: a bare
+        // inputFileLocal is ignored ("InputFile is not specified").
         @"photo": @{
-            @"@type": @"inputFileLocal",
-            @"path": path
+            @"@type": @"inputPhoto",
+            @"photo": @{
+                @"@type": @"inputFileLocal",
+                @"path": path
+            },
+            @"added_sticker_file_ids": @[]
         },
         @"caption": @{
             @"@type": @"formattedText",
@@ -710,10 +716,15 @@ static int32_t TGStickerFileId(NSDictionary *sticker) {
 
     NSDictionary *content = @{
         @"@type": @"inputMessageSticker",
-        @"sticker": @{@"@type": @"inputFileId", @"id": @(fileId)},
-        @"width": @(MAX(1, TGInt32Value(sticker[@"width"]))),
-        @"height": @(MAX(1, TGInt32Value(sticker[@"height"]))),
-        @"emoji": TGStringValue(sticker[@"emoji"])
+        // TDLib 1.8 wraps the file in an inputSticker struct with width/height;
+        // a bare inputFileId is ignored ("InputFile is not specified").
+        @"sticker": @{
+            @"@type": @"inputSticker",
+            @"sticker": @{@"@type": @"inputFileId", @"id": @(fileId)},
+            @"width": @(MAX(1, TGInt32Value(sticker[@"width"]))),
+            @"height": @(MAX(1, TGInt32Value(sticker[@"height"])))
+        },
+        @"emoji": TGStringValue(sticker[@"emoji"]) ?: @""
     };
     [self sendRequest:@{@"@type": @"sendMessage", @"chat_id": @(chatId), @"input_message_content": content} completion:^(NSDictionary *response) {
         if ([TGStringValue(response[@"@type"]) isEqualToString:@"message"]) {

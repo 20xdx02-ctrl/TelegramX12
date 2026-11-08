@@ -15,6 +15,7 @@ Aplikacja jest napisana w Objective-C/UIKit i buduje się lokalnie przez **Theos
 - otwieranie czatu od **pierwszej nieprzeczytanej wiadomości** — separator „Nieprzeczytane" jak `ChatUnreadItem` w Telegramie X,
 - wysyłanie wiadomości tekstowych, zdjęć i stickerów,
 - wybierak stickerów (ulubione, ostatnio używane, zainstalowane paczki) w postaci panelu nad paskiem wpisywania,
+- interfejs tabletu (iPad): dwa panele jak w Telegramie X — lista czatów po lewej, rozmowa po prawej (`UISplitViewController`, placeholder „Wybierz czat", przycięte bańki do 420 pt),
 - oznaczanie wiadomości jako przeczytane,
 - aktualizacje w czasie rzeczywistym (nowe wiadomości, zmiany pozycji czatu, tytułu, licznika),
 - ekran ustawień `api_id` / `api_hash` oraz wylogowanie,
@@ -129,6 +130,8 @@ TelegramX12/
     TGChatViewController.*
     TGMessageCell.*
     TGInputBar.*
+    TGStickerPickerView.*    # panel wybierania stickerów nad paskiem input
+    TGChatPlaceholderViewController.*  # prawa kolumna iPada przed otwarciem czatu
     TGSettingsViewController.*
     TGTheme.*, TGAvatarView.*, TGLogoView.*
     compat.c                # shim ___darwin_check_fd_set_overflow dla iOS 12

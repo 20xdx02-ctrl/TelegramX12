@@ -3,11 +3,13 @@
 #import "TGTDLibClient.h"
 #import "TGLoginViewController.h"
 #import "TGChatListViewController.h"
+#import "TGChatPlaceholderViewController.h"
 #import "TGModels.h"
 
 @interface TGAppDelegate () <TGTDLibClientDelegate>
 @property (nonatomic, strong) TGTDLibClient *client;
 @property (nonatomic, strong) UINavigationController *navigationController;
+@property (nonatomic, strong) UISplitViewController *splitViewController;
 @property (nonatomic, weak) TGLoginViewController *loginViewController;
 @property (nonatomic) BOOL readyScreenShown;
 @end
@@ -65,7 +67,23 @@
 
     TGChatListViewController *chatList = [[TGChatListViewController alloc] initWithClient:self.client];
     UINavigationController *navigation = [[UINavigationController alloc] initWithRootViewController:chatList];
-    [self setRootViewController:navigation animated:animated];
+
+    // iPad / regular width: Telegram X style two pane layout — chat list on
+    // the left, conversation (or the placeholder) on the right. On compact
+    // devices the same split collapses into a plain navigation stack.
+    BOOL isPhone = [[UIDevice currentDevice] userInterfaceIdiom] == UIUserInterfaceIdiomPhone;
+    UISplitViewController *split = nil;
+    if (!isPhone) {
+        split = [[UISplitViewController alloc] init];
+        UINavigationController *detail = [[UINavigationController alloc] initWithRootViewController:[[TGChatPlaceholderViewController alloc] init]];
+        split.viewControllers = @[navigation, detail];
+        split.minimumPrimaryColumnWidth = 320.0;
+        split.maximumPrimaryColumnWidth = 420.0;
+        split.presentsWithGesture = NO;
+    }
+
+    self.splitViewController = split;
+    [self setRootViewController:(split != nil ? (UIViewController *)split : (UIViewController *)navigation) animated:animated];
 }
 
 - (void)setRootViewController:(UIViewController *)viewController animated:(BOOL)animated {
@@ -123,12 +141,33 @@
 }
 
 - (void)tgClient:(TGTDLibClient *)client didReceiveUpdate:(NSDictionary *)update {
-    NSArray<UIViewController *> *viewControllers = [self.navigationController.viewControllers copy];
-    for (UIViewController *vc in viewControllers) {
+    for (UIViewController *vc in [self visibleUpdateTargets]) {
         if ([vc respondsToSelector:@selector(handleTDLibUpdate:)]) {
             [(id)vc handleTDLibUpdate:update];
         }
     }
+}
+
+/// Collects every presented navigation root across the window hierarchy so
+/// TDLib updates reach both columns of an iPad split view.
+- (NSArray<UIViewController *> *)visibleUpdateTargets {
+    NSMutableArray<UIViewController *> *targets = [NSMutableArray array];
+    UIViewController *root = self.window.rootViewController;
+    if ([root isKindOfClass:[UISplitViewController class]]) {
+        UISplitViewController *split = (UISplitViewController *)root;
+        for (UIViewController *column in split.viewControllers) {
+            if ([column isKindOfClass:[UINavigationController class]]) {
+                [targets addObjectsFromArray:((UINavigationController *)column).viewControllers];
+            } else if (column != nil) {
+                [targets addObject:column];
+            }
+        }
+    } else if ([root isKindOfClass:[UINavigationController class]]) {
+        [targets addObjectsFromArray:((UINavigationController *)root).viewControllers];
+    } else if (root != nil) {
+        [targets addObject:root];
+    }
+    return targets;
 }
 
 - (void)tgClient:(TGTDLibClient *)client didFailWithError:(NSDictionary *)error {

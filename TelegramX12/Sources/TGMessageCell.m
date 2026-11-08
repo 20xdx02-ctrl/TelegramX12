@@ -10,6 +10,7 @@ static const CGFloat TGMessageCellBubblePadding = 12.0;
 static const CGFloat TGMessageCellTimeHeight = 12.0;
 static const CGFloat TGMessageCellSenderHeight = 14.0;
 static const CGFloat TGMessageCellTextSize = 16.0;
+static const CGFloat TGMessageCellMaxBubbleWidth = 420.0; // cap bubbles on wide screens (iPad)
 
 @interface TGMessageCell ()
 
@@ -52,6 +53,10 @@ static const CGFloat TGMessageCellTextSize = 16.0;
 @end
 
 @implementation TGMessageCell
+
++ (CGFloat)bubbleWidthForWidth:(CGFloat)width {
+    return MIN(floor(width * 0.78), TGMessageCellMaxBubbleWidth);
+}
 
 - (instancetype)initWithStyle:(UITableViewCellStyle)style reuseIdentifier:(NSString *)reuseIdentifier {
     self = [super initWithStyle:style reuseIdentifier:reuseIdentifier];
@@ -310,7 +315,7 @@ static const CGFloat TGMessageCellTextSize = 16.0;
         return 32.0;
     }
 
-    CGFloat maxBubbleWidth = floor(width * 0.78);
+    CGFloat maxBubbleWidth = [self bubbleWidthForWidth:width];
     CGFloat maxTextWidth = MAX(60.0, maxBubbleWidth - TGMessageCellBubblePadding * 2.0);
 
     // Floating Stickers
@@ -750,7 +755,7 @@ static const CGFloat TGMessageCellTextSize = 16.0;
         return;
     }
 
-    CGFloat maxBubbleWidth = floor(width * 0.78);
+    CGFloat maxBubbleWidth = [[self class] bubbleWidthForWidth:width];
 
     // Layout floating sticker
     if (self.message.messageType == TGMessageTypeSticker) {

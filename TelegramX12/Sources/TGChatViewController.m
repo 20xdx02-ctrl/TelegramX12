@@ -801,11 +801,21 @@
 - (void)sendSticker:(NSDictionary *)sticker {
     __weak typeof(self) weakSelf = self;
     [self.client sendSticker:sticker toChat:self.chatId completion:^(NSDictionary *message, NSDictionary *error) {
-        if (message != nil) {
-            dispatch_async(dispatch_get_main_queue(), ^{
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (message != nil) {
                 [weakSelf upsertMessageDictionary:message scrollToBottom:YES forceScroll:YES];
-            });
-        }
+                return;
+            }
+            NSString *messageText = TGStringValue(error[@"message"]);
+            if (messageText.length == 0) {
+                messageText = @"Nie udało się wysłać stickera.";
+            }
+            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Błąd wysyłania"
+                                                                            message:messageText
+                                                                     preferredStyle:UIAlertControllerStyleAlert];
+            [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+            [weakSelf presentViewController:alert animated:YES completion:nil];
+        });
     }];
 }
 
@@ -821,11 +831,21 @@
 
     __weak typeof(self) weakSelf = self;
     [self.client sendPhotoAtPath:filePath toChat:self.chatId caption:nil completion:^(NSDictionary *message, NSDictionary *error) {
-        if (message != nil) {
-            dispatch_async(dispatch_get_main_queue(), ^{
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (message != nil) {
                 [weakSelf upsertMessageDictionary:message scrollToBottom:YES forceScroll:YES];
-            });
-        }
+                return;
+            }
+            NSString *messageText = TGStringValue(error[@"message"]);
+            if (messageText.length == 0) {
+                messageText = @"Nie udało się wysłać zdjęcia.";
+            }
+            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Błąd wysyłania"
+                                                                            message:messageText
+                                                                     preferredStyle:UIAlertControllerStyleAlert];
+            [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+            [weakSelf presentViewController:alert animated:YES completion:nil];
+        });
     }];
 }
 
