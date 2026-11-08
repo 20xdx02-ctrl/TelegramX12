@@ -9,6 +9,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 @property (nonatomic, copy, nullable) void (^onMediaTap)(TGMessage *message);
 @property (nonatomic, copy, nullable) void (^onStickerTap)(TGMessage *message);
+@property (nonatomic, copy, nullable) void (^onRetryTap)(TGMessage *message);
 
 - (void)configureWithMessage:(TGMessage *)message
                   showSender:(BOOL)showSender

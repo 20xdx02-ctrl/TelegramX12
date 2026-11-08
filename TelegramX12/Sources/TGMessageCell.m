@@ -1,5 +1,6 @@
 #import "TGMessageCell.h"
 
+#import "TGAvatarView.h"
 #import "TGModels.h"
 #import "TGTheme.h"
 #import "TGTDLibClient.h"
@@ -11,6 +12,9 @@ static const CGFloat TGMessageCellTimeHeight = 12.0;
 static const CGFloat TGMessageCellSenderHeight = 14.0;
 static const CGFloat TGMessageCellTextSize = 16.0;
 static const CGFloat TGMessageCellMaxBubbleWidth = 420.0; // cap bubbles on wide screens (iPad)
+static const CGFloat TGMessageCellAvatarSize = 30.0;
+static const CGFloat TGMessageCellAvatarGap = 8.0;
+static const CGFloat TGMessageCellAvatarSlot = TGMessageCellAvatarSize + TGMessageCellAvatarGap;
 
 @interface TGMessageCell ()
 
@@ -38,6 +42,9 @@ static const CGFloat TGMessageCellMaxBubbleWidth = 420.0; // cap bubbles on wide
 @property (nonatomic, strong) UIView *unreadBarView;
 @property (nonatomic, strong) UILabel *unreadBarLabel;
 
+// Author avatar column (incoming messages with sender names)
+@property (nonatomic, strong) TGAvatarView *authorAvatarView;
+
 // File / Audio / Extra views
 @property (nonatomic, strong) UIView *docIconView;
 @property (nonatomic, strong) UILabel *docIconLabel;
@@ -56,6 +63,23 @@ static const CGFloat TGMessageCellMaxBubbleWidth = 420.0; // cap bubbles on wide
 
 + (CGFloat)bubbleWidthForWidth:(CGFloat)width {
     return MIN(floor(width * 0.78), TGMessageCellMaxBubbleWidth);
+}
+
++ (BOOL)showsAuthorAvatarForMessage:(TGMessage *)message showSender:(BOOL)showSender {
+    // Author avatar for every incoming message; showSender only controls the
+    // in-bubble name row (groups).
+    return !message.isOutgoing && !message.isService && !message.isUnreadDivider;
+}
+
+/// Effective max bubble width, shrunk by the avatar column on the incoming
+/// side when sender avatars are enabled (groups / supergroups).
++ (CGFloat)bubbleWidthForMessage:(TGMessage *)message width:(CGFloat)width showSender:(BOOL)showSender {
+    CGFloat cap = MIN(floor(width * 0.78), TGMessageCellMaxBubbleWidth);
+    if ([self showsAuthorAvatarForMessage:message showSender:showSender]) {
+        CGFloat available = width - TGMessageCellHorizontalMargin * 2 - TGMessageCellAvatarSlot;
+        cap = MIN(cap, MAX(60.0, available));
+    }
+    return cap;
 }
 
 - (instancetype)initWithStyle:(UITableViewCellStyle)style reuseIdentifier:(NSString *)reuseIdentifier {
@@ -206,8 +230,36 @@ static const CGFloat TGMessageCellMaxBubbleWidth = 420.0; // cap bubbles on wide
         _unreadBarLabel.textAlignment = NSTextAlignmentCenter;
         _unreadBarLabel.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         [_unreadBarView addSubview:_unreadBarLabel];
+
+        // Author avatar column on the left of incoming messages.
+        _authorAvatarView = [[TGAvatarView alloc] initWithFrame:CGRectMake(0, 0, TGMessageCellAvatarSize, TGMessageCellAvatarSize)];
+        _authorAvatarView.hidden = YES;
+        [self.contentView addSubview:_authorAvatarView];
+
+        // Cell-level tap: retries failed sends and opens file/audio cards.
+        UITapGestureRecognizer *cellTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(handleCellTap)];
+        [self.contentView addGestureRecognizer:cellTap];
     }
     return self;
+}
+
+- (void)handleCellTap {
+    if (self.message == nil) {
+        return;
+    }
+    if (self.message.isFailed && self.onRetryTap != nil) {
+        self.onRetryTap(self.message);
+        return;
+    }
+    // Media containers / stickers have their own tap handlers.
+    TGMessageType type = self.message.messageType;
+    if (type == TGMessageTypePhoto || type == TGMessageTypeVideo ||
+        type == TGMessageTypeAnimation || type == TGMessageTypeSticker) {
+        return;
+    }
+    if (self.onMediaTap != nil) {
+        self.onMediaTap(self.message);
+    }
 }
 
 - (void)handleMediaTap {
@@ -220,6 +272,25 @@ static const CGFloat TGMessageCellMaxBubbleWidth = 420.0; // cap bubbles on wide
     if (self.onStickerTap && self.message != nil) {
         self.onStickerTap(self.message);
     }
+}
+
+- (void)loadAuthorAvatar {
+    if (self.client == nil) {
+        return;
+    }
+    NSString *title = self.senderName.length > 0 ? self.senderName : @"?";
+    int32_t fileId = 0;
+    if (self.message.senderIsUser) {
+        NSDictionary *user = [self.client userWithId:self.message.senderId];
+        fileId = TGInt32Value(user[@"profile_photo"][@"small"][@"id"]);
+    } else {
+        NSDictionary *chat = [self.client chatWithId:self.message.senderId];
+        fileId = TGInt32Value(chat[@"photo"][@"small"][@"id"]);
+    }
+    [self.authorAvatarView loadAvatarWithFileId:fileId
+                                        client:self.client
+                                         title:title
+                                    identifier:self.message.senderId];
 }
 
 - (void)prepareForReuse {
@@ -236,6 +307,7 @@ static const CGFloat TGMessageCellMaxBubbleWidth = 420.0; // cap bubbles on wide
     self.timeLabel.text = nil;
     self.serviceLabel.text = nil;
     self.unreadBarView.hidden = YES;
+    self.authorAvatarView.hidden = YES;
     self.docTitleLabel.text = nil;
     self.docSubtitleLabel.text = nil;
 }
@@ -315,10 +387,10 @@ static const CGFloat TGMessageCellMaxBubbleWidth = 420.0; // cap bubbles on wide
         return 32.0;
     }
 
-    CGFloat maxBubbleWidth = [self bubbleWidthForWidth:width];
+    CGFloat maxBubbleWidth = [self bubbleWidthForMessage:message width:width showSender:showSender];
     CGFloat maxTextWidth = MAX(60.0, maxBubbleWidth - TGMessageCellBubblePadding * 2.0);
 
-    // Floating Stickers
+    // Floating stickers do not use the bubble; height is just the media size.
     if (message.messageType == TGMessageTypeSticker) {
         CGSize stickerSize = [self mediaSizeForMessage:message maxBubbleWidth:maxBubbleWidth];
         return stickerSize.height + 12.0;
@@ -418,6 +490,13 @@ static const CGFloat TGMessageCellMaxBubbleWidth = 420.0; // cap bubbles on wide
     _senderLabel.text = senderName;
     _senderLabel.hidden = !(showSender && !message.isOutgoing);
     _timeLabel.text = [self timeTextForMessage:message];
+
+    // Author avatar: incoming side only (Telegram shows avatars in groups).
+    BOOL withAvatar = [[self class] showsAuthorAvatarForMessage:message showSender:showSender];
+    _authorAvatarView.hidden = !withAvatar;
+    if (withAvatar) {
+        [self loadAuthorAvatar];
+    }
 
     // Reset visibility of media subviews
     _mediaContainer.hidden = YES;
@@ -546,6 +625,15 @@ static const CGFloat TGMessageCellMaxBubbleWidth = 420.0; // cap bubbles on wide
 #pragma mark - Media Loaders
 
 - (void)loadPhotoForMessage:(TGMessage *)message client:(nullable TGTDLibClient *)client {
+    // 0. Locally-available file (pending sends keep the input file path)
+    if (message.mediaLocalPath.length > 0 && [[NSFileManager defaultManager] fileExistsAtPath:message.mediaLocalPath]) {
+        UIImage *localImage = [UIImage imageWithContentsOfFile:message.mediaLocalPath];
+        if (localImage != nil) {
+            self.mediaImageView.image = localImage;
+            return;
+        }
+    }
+
     // 1. Minithumbnail
     if (message.minithumbnailData.length > 0 && self.mediaImageView.image == nil) {
         self.mediaImageView.image = [UIImage imageWithData:message.minithumbnailData];
@@ -755,14 +843,20 @@ static const CGFloat TGMessageCellMaxBubbleWidth = 420.0; // cap bubbles on wide
         return;
     }
 
-    CGFloat maxBubbleWidth = [[self class] bubbleWidthForWidth:width];
+    CGFloat maxBubbleWidth = [[self class] bubbleWidthForMessage:self.message width:width showSender:self.showSender];
+
+    BOOL withAvatar = [[self class] showsAuthorAvatarForMessage:self.message showSender:self.showSender];
+    CGFloat leadingMargin = TGMessageCellHorizontalMargin;
+    if (withAvatar) {
+        leadingMargin += TGMessageCellAvatarSlot;
+    }
 
     // Layout floating sticker
     if (self.message.messageType == TGMessageTypeSticker) {
         CGSize stickerSize = [[self class] mediaSizeForMessage:self.message maxBubbleWidth:maxBubbleWidth];
         CGFloat stickerX = self.message.isOutgoing
             ? width - TGMessageCellHorizontalMargin - stickerSize.width
-            : TGMessageCellHorizontalMargin;
+            : leadingMargin;
         CGFloat stickerY = 6.0;
 
         self.stickerImageView.frame = CGRectMake(stickerX, stickerY, stickerSize.width, stickerSize.height);
@@ -774,6 +868,13 @@ static const CGFloat TGMessageCellMaxBubbleWidth = 420.0; // cap bubbles on wide
                                                 pillSize.width,
                                                 pillSize.height);
         self.stickerTimeLabel.frame = self.stickerTimePill.bounds;
+
+        if (withAvatar) {
+            self.authorAvatarView.frame = CGRectMake(TGMessageCellHorizontalMargin,
+                                                     CGRectGetHeight(self.contentView.bounds) - TGMessageCellAvatarSize - 6.0,
+                                                     TGMessageCellAvatarSize,
+                                                     TGMessageCellAvatarSize);
+        }
         return;
     }
 
@@ -842,12 +943,22 @@ static const CGFloat TGMessageCellMaxBubbleWidth = 420.0; // cap bubbles on wide
     bubbleWidth = MAX(bubbleWidth, 68.0);
     CGFloat bubbleHeight = curY + TGMessageCellTimeHeight + 6.0;
 
-    CGFloat bubbleX = self.message.isOutgoing
-        ? width - TGMessageCellHorizontalMargin - bubbleWidth
-        : TGMessageCellHorizontalMargin;
+    CGFloat bubbleX;
+    if (self.message.isOutgoing) {
+        bubbleX = width - TGMessageCellHorizontalMargin - bubbleWidth;
+    } else {
+        bubbleX = leadingMargin;
+    }
     CGFloat bubbleY = 3.0;
 
     self.bubbleView.frame = CGRectMake(bubbleX, bubbleY, bubbleWidth, bubbleHeight);
+
+    if (withAvatar) {
+        self.authorAvatarView.frame = CGRectMake(TGMessageCellHorizontalMargin,
+                                                 bubbleY + bubbleHeight - TGMessageCellAvatarSize,
+                                                 TGMessageCellAvatarSize,
+                                                 TGMessageCellAvatarSize);
+    }
 
     if (self.showSender && !self.message.isOutgoing) {
         self.senderLabel.frame = CGRectMake(TGMessageCellBubblePadding, 6.0, bubbleWidth - TGMessageCellBubblePadding * 2.0, TGMessageCellSenderHeight);

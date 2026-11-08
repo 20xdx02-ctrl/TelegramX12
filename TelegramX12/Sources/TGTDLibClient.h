@@ -61,6 +61,9 @@ typedef void (^TGStickerSectionsBlock)(NSArray<NSDictionary *> * _Nullable secti
 - (void)viewMessages:(NSArray<NSNumber *> *)messageIds inChat:(int64_t)chatId;
 - (void)openChat:(int64_t)chatId;
 - (void)closeChat:(int64_t)chatId;
+/// Re-sends failed messages (TDLib replaces the old message id on success).
+- (void)resendMessages:(NSArray<NSNumber *> *)messageIds inChat:(int64_t)chatId completion:(void(^)(NSDictionary *error))completion;
+- (void)closeChat:(int64_t)chatId;
 
 - (void)downloadFileWithId:(int32_t)fileId
                   priority:(int32_t)priority

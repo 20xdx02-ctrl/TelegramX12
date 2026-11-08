@@ -110,6 +110,38 @@
     return [formatter stringFromDate:date];
 }
 
++ (NSString *)chatDayHeadingStringForTimestamp:(int32_t)timestamp {
+    if (timestamp <= 0) {
+        return @"";
+    }
+    NSDate *date = [NSDate dateWithTimeIntervalSince1970:timestamp];
+    NSCalendar *calendar = [NSCalendar currentCalendar];
+    if ([calendar isDateInToday:date]) {
+        return @"Dziś";
+    }
+    if ([calendar isDateInYesterday:date]) {
+        return @"Wczoraj";
+    }
+    NSDateComponents *today = [calendar components:NSCalendarUnitYear | NSCalendarUnitMonth
+                                          fromDate:[NSDate date]];
+    NSDateComponents *then = [calendar components:NSCalendarUnitYear | NSCalendarUnitMonth
+                                         fromDate:date];
+    static dispatch_once_t onceToken;
+    static NSDateFormatter *dayFormatter;
+    dispatch_once(&onceToken, ^{
+        dayFormatter = [[NSDateFormatter alloc] init];
+        dayFormatter.locale = [NSLocale localeWithLocaleIdentifier:@"pl_PL"];
+    });
+    if ([today year] == [then year] && [today month] == [then month]) {
+        dayFormatter.dateFormat = @"d MMMM";
+    } else if ([today year] == [then year]) {
+        dayFormatter.dateFormat = @"d MMMM";
+    } else {
+        dayFormatter.dateFormat = @"d MMMM yyyy";
+    }
+    return [dayFormatter stringFromDate:date];
+}
+
 + (NSString *)initialsForTitle:(NSString *)title {
     NSString *trimmed = [title stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     if (trimmed.length == 0) {

@@ -27,6 +27,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 + (NSString *)timeStringForTimestamp:(int32_t)timestamp;
 + (NSString *)chatListTimeStringForTimestamp:(int32_t)timestamp;
++ (NSString *)chatDayHeadingStringForTimestamp:(int32_t)timestamp;
 + (NSString *)initialsForTitle:(NSString *)title;
 + (UIColor *)avatarColorForIdentifier:(int64_t)identifier;
 

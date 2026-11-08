@@ -1,5 +1,6 @@
 #import "TGChatViewController.h"
 
+#import "TGAvatarView.h"
 #import "TGInputBar.h"
 #import "TGMessageCell.h"
 #import "TGModels.h"
@@ -10,7 +11,7 @@
 #import <AVFoundation/AVFoundation.h>
 #import <AVKit/AVKit.h>
 
-@interface TGChatViewController () <UITableViewDataSource, UITableViewDelegate, UIImagePickerControllerDelegate, UINavigationControllerDelegate>
+@interface TGChatViewController () <UITableViewDataSource, UITableViewDelegate, UIImagePickerControllerDelegate, UINavigationControllerDelegate, UIDocumentInteractionControllerDelegate>
 @property (nonatomic, strong) TGTDLibClient *client;
 @property (nonatomic) int64_t chatId;
 @property (nonatomic) int64_t lastReadOutboxMessageId;
@@ -21,6 +22,9 @@
 @property (nonatomic, strong) UIView *titleHeaderView;
 @property (nonatomic, strong) UILabel *titleHeaderLabel;
 @property (nonatomic, strong) UILabel *subtitleHeaderLabel;
+@property (nonatomic, strong) TGAvatarView *headerAvatarView;
+@property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSDictionary *> *typingBySender;
+@property (nonatomic) NSInteger typingRefreshGeneration;
 @property (nonatomic, strong) UITableView *tableView;
 @property (nonatomic, strong) TGInputBar *inputBar;
 @property (nonatomic, strong) NSLayoutConstraint *inputBottomConstraint;
@@ -42,6 +46,8 @@
 @property (nonatomic) BOOL visible;
 @property (nonatomic) BOOL showSenderNames;
 @property (nonatomic, copy) NSString *chatTitleForDisplay;
+@property (nonatomic, strong) AVAudioPlayer *audioPlayer;
+@property (nonatomic, strong) UIDocumentInteractionController *documentController;
 @end
 
 @implementation TGChatViewController
@@ -54,6 +60,7 @@
         _chatTitleForDisplay = [title copy];
         _messages = [NSMutableArray array];
         _messageIndexById = [NSMutableDictionary dictionary];
+        _typingBySender = [NSMutableDictionary dictionary];
         _totalCount = 0;
     }
     return self;
@@ -65,22 +72,27 @@
     self.view.backgroundColor = [TGTheme chatBackgroundColor];
     self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
 
-    _titleHeaderView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 180, 44)];
-    _titleHeaderLabel = [[UILabel alloc] initWithFrame:CGRectMake(0, 4, 180, 20)];
+    _titleHeaderView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 212, 44)];
+
+    _headerAvatarView = [[TGAvatarView alloc] initWithFrame:CGRectMake(0, 5, 34, 34)];
+    [_titleHeaderView addSubview:_headerAvatarView];
+
+    _titleHeaderLabel = [[UILabel alloc] initWithFrame:CGRectMake(42, 4, 168, 20)];
     _titleHeaderLabel.font = [TGTheme semiboldFontOfSize:16.0];
     _titleHeaderLabel.textColor = [UIColor blackColor];
     _titleHeaderLabel.textAlignment = NSTextAlignmentCenter;
     _titleHeaderLabel.text = self.chatTitleForDisplay;
     [_titleHeaderView addSubview:_titleHeaderLabel];
 
-    _subtitleHeaderLabel = [[UILabel alloc] initWithFrame:CGRectMake(0, 24, 180, 16)];
+    _subtitleHeaderLabel = [[UILabel alloc] initWithFrame:CGRectMake(42, 24, 168, 16)];
     _subtitleHeaderLabel.font = [TGTheme regularFontOfSize:12.0];
     _subtitleHeaderLabel.textColor = [TGTheme secondaryTextColor];
     _subtitleHeaderLabel.textAlignment = NSTextAlignmentCenter;
     [_titleHeaderView addSubview:_subtitleHeaderLabel];
 
     self.navigationItem.titleView = _titleHeaderView;
-    [self updateSubtitle];
+    [self refreshHeaderSubtitle];
+    [self loadHeaderAvatar];
 
     [self updateSenderVisibility];
 
@@ -225,7 +237,7 @@
     if (chat != nil) {
         self.lastReadOutboxMessageId = TGInt64Value(chat[@"last_read_outbox_message_id"]);
     }
-    [self updateSubtitle];
+    [self refreshHeaderSubtitle];
     __weak typeof(self) weakSelf = self;
     [self.client loadHistoryForChat:self.chatId fromMessageId:0 limit:50 completion:^(NSArray<NSDictionary *> *messages, NSInteger totalCount, NSDictionary *error) {
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -294,6 +306,7 @@
 
     [self.messages addObjectsFromArray:loaded];
     [self rebuildMessageIndex];
+    [self recomputeDateDividers];
     self.totalCount = MAX(totalCount, (NSInteger)self.messages.count);
 }
 
@@ -356,7 +369,7 @@
 
             NSIndexSet *indexes = [NSIndexSet indexSetWithIndexesInRange:NSMakeRange(0, newMessages.count)];
             [weakSelf.messages insertObjects:newMessages atIndexes:indexes];
-            [weakSelf rebuildMessageIndex];
+            [weakSelf recomputeDateDividers];
             [weakSelf.tableView reloadData];
             [weakSelf.tableView layoutIfNeeded];
 
@@ -582,6 +595,7 @@
         }
         [self.messages removeObjectsAtIndexes:indexes];
         [self rebuildMessageIndex];
+        [self recomputeDateDividers];
         [self.tableView reloadData];
         [self updateEmptyState];
         return;
@@ -595,6 +609,30 @@
                 self.title = title;
                 self.titleHeaderLabel.text = title;
             }
+        }
+        return;
+    }
+
+    if ([type isEqualToString:@"updateChatUserAction"]) {
+        if (TGInt64Value(update[@"chat_id"]) != self.chatId) {
+            return;
+        }
+        int64_t actorId = TGInt64Value(update[@"actor_id"]);
+        NSDictionary *action = update[@"action"];
+        NSString *actionType = TGStringValue(action[@"@type"]);
+        if (actorId == 0 || [actionType isEqualToString:@"sendMessageCancelAction"]) {
+            [self.typingBySender removeObjectForKey:@(actorId)];
+        } else {
+            self.typingBySender[@(actorId)] = @{ @"sender": update[@"actor_id"] ?: @{}, @"time": [NSDate date] };
+        }
+        [self scheduleTypingRefresh];
+        [self refreshHeaderSubtitle];
+        return;
+    }
+
+    if ([type isEqualToString:@"updateChatPhoto"]) {
+        if (TGInt64Value(update[@"chat_id"]) == self.chatId) {
+            [self loadHeaderAvatar];
         }
         return;
     }
@@ -618,7 +656,106 @@
     }
 }
 
-- (void)updateSubtitle {
+- (void)loadHeaderAvatar {
+    NSString *title = self.chatTitleForDisplay.length > 0 ? self.chatTitleForDisplay : self.title;
+    NSDictionary *chat = [self.client chatWithId:self.chatId];
+    int32_t fileId = TGInt32Value(chat[@"photo"][@"small"][@"id"]);
+    [self.headerAvatarView loadAvatarWithFileId:fileId client:self.client title:title identifier:self.chatId];
+}
+
+/// Re-renders the typing subtitle a few seconds after the last activity so
+/// stale timers do not keep "pisze…" on the header forever.
+- (void)scheduleTypingRefresh {
+    NSInteger generation = ++self.typingRefreshGeneration;
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (weakSelf != nil && weakSelf.typingRefreshGeneration == generation) {
+            [weakSelf refreshHeaderSubtitle];
+        }
+    });
+}
+
+- (NSInteger)calendarDayForTimestamp:(int32_t)timestamp {
+    static NSCalendar *calendar;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        calendar = [[NSCalendar alloc] initWithCalendarIdentifier:NSCalendarIdentifierGregorian];
+    });
+    NSDate *date = [NSDate dateWithTimeIntervalSince1970:timestamp];
+    NSDateComponents *components = [calendar components:NSCalendarUnitYear | NSCalendarUnitMonth | NSCalendarUnitDay fromDate:date];
+    return (NSInteger)[components year] * 10000 + (NSInteger)[components month] * 100 + (NSInteger)[components day];
+}
+
+/// Rebuilds the synthetic "Dziś / Wczoraj / data" rows between messages,
+/// mirroring Telegram X's ChatHistoryHeaderItem day separators.
+- (void)recomputeDateDividers {
+    NSIndexSet *existing = [self.messages indexesOfObjectsPassingTest:^BOOL(TGMessage *msg, NSUInteger idx, BOOL *stop) {
+        return msg.isDateDivider;
+    }];
+    if (existing.count > 0) {
+        [self.messages removeObjectsAtIndexes:existing];
+    }
+
+    NSMutableArray<TGMessage *> *withDividers = [NSMutableArray array];
+    NSInteger previousDay = 0;
+    for (TGMessage *message in self.messages) {
+        if (message.date <= 0) {
+            [withDividers addObject:message];
+            continue;
+        }
+        NSInteger day = [self calendarDayForTimestamp:message.date];
+        if (day != previousDay) {
+            TGMessage *divider = [[TGMessage alloc] init];
+            divider.messageId = 0;
+            divider.chatId = self.chatId;
+            divider.date = message.date;
+            divider.isOutgoing = NO;
+            divider.isService = YES;
+            divider.isDateDivider = YES;
+            divider.messageType = TGMessageTypeService;
+            divider.text = [TGTheme chatDayHeadingStringForTimestamp:message.date];
+            [withDividers addObject:divider];
+            previousDay = day;
+        }
+        [withDividers addObject:message];
+    }
+    [self.messages removeAllObjects];
+    [self.messages addObjectsFromArray:withDividers];
+    [self rebuildMessageIndex];
+}
+
+- (void)refreshHeaderSubtitle {
+    // Typing indicator (Telegram style): the transient "pisze…" state wins
+    // over the static status for as long as recent activities keep coming.
+    NSDate *now = [NSDate date];
+    for (NSNumber *senderId in [self.typingBySender copy]) {
+        NSDictionary *entry = self.typingBySender[senderId];
+        NSDate *at = entry[@"time"];
+        if ([at isKindOfClass:[NSDate class]] && [now timeIntervalSinceDate:at] > 6.0) {
+            [self.typingBySender removeObjectForKey:senderId];
+        }
+    }
+    if (self.typingBySender.count > 0) {
+        NSMutableArray<NSString *> *names = [NSMutableArray array];
+        for (NSNumber *senderId in self.typingBySender) {
+            NSString *name = [self.client displayNameForSender:self.typingBySender[senderId][@"sender"]];
+            if (name.length > 0) {
+                [names addObject:name];
+            } else {
+                [names addObject:@"Ktoś"];
+            }
+        }
+        if (names.count == 1) {
+            self.subtitleHeaderLabel.text = [names[0] stringByAppendingString:@" pisze…"];
+        } else if (names.count == 2) {
+            self.subtitleHeaderLabel.text = [NSString stringWithFormat:@"%@ i %@ piszą…", names[0], names[1]];
+        } else {
+            self.subtitleHeaderLabel.text = [NSString stringWithFormat:@"%lu osób pisze…", (unsigned long)names.count];
+        }
+        self.subtitleHeaderLabel.textColor = [TGTheme accentColor];
+        return;
+    }
+
     NSDictionary *chat = [self.client chatWithId:self.chatId];
     if (chat == nil) return;
     NSDictionary *type = chat[@"type"];
@@ -876,6 +1013,7 @@
         }
         [self.messages insertObject:message atIndex:insertIndex];
         [self rebuildMessageIndex];
+        [self recomputeDateDividers];
         [self.tableView reloadData];
     }
 
@@ -906,6 +1044,7 @@
         } else {
             [self.messages addObject:newMessage];
             [self rebuildMessageIndex];
+            [self recomputeDateDividers];
         }
     }
     [self.tableView reloadData];
@@ -932,7 +1071,7 @@
     TGMessageCell *cell = [tableView dequeueReusableCellWithIdentifier:@"TGMessageCell" forIndexPath:indexPath];
     TGMessage *message = self.messages[(NSUInteger)indexPath.row];
     NSString *senderName = @"";
-    if (self.showSenderNames && !message.isOutgoing && !message.isService) {
+    if (!message.isOutgoing && !message.isService) {
         senderName = [self.client displayNameForSender:message.raw[@"sender_id"]];
     }
     [cell configureWithMessage:message showSender:self.showSenderNames senderName:senderName client:self.client];
@@ -940,6 +1079,9 @@
     __weak typeof(self) weakSelf = self;
     cell.onMediaTap = ^(TGMessage *msg) {
         [weakSelf handleMediaTapForMessage:msg];
+    };
+    cell.onRetryTap = ^(TGMessage *msg) {
+        [weakSelf resendFailedMessage:msg];
     };
     return cell;
 }
@@ -979,7 +1121,93 @@
                 }
             }];
         }
+    } else if (message.messageType == TGMessageTypeVoiceNote || message.messageType == TGMessageTypeAudio) {
+        [self playAudioForMessage:message];
+    } else if (message.messageType == TGMessageTypeDocument) {
+        [self openDocumentForMessage:message];
     }
+}
+
+// Voice notes are Ogg/Opus — AVAudioPlayer may refuse them on iOS; fall back
+// to a clear message instead of silence.
+- (void)playAudioForMessage:(TGMessage *)message {
+    int32_t fileId = message.mediaFileId > 0 ? message.mediaFileId : message.thumbnailFileId;
+    __weak typeof(self) weakSelf = self;
+    void (^playBlock)(NSString *path) = ^(NSString *path) {
+        if (weakSelf == nil || path.length == 0) {
+            return;
+        }
+        weakSelf.audioPlayer = [[AVAudioPlayer alloc] initWithContentsOfURL:[NSURL fileURLWithPath:path] error:nil];
+        if (weakSelf.audioPlayer != nil) {
+            [weakSelf.audioPlayer play];
+        } else {
+            [weakSelf presentSimpleAlertWithTitle:@"Nie można odtworzyć"
+                                             message:@"Ten format audio nie jest jeszcze obsługiwany (ogg/opus)."];
+        }
+    };
+    if (fileId <= 0) {
+        [self presentSimpleAlertWithTitle:@"Nie można odtworzyć" message:@"Brak pliku audio w wiadomości."];
+        return;
+    }
+    NSString *path = [self.client localPathForFileId:fileId];
+    if (path.length > 0 && [[NSFileManager defaultManager] fileExistsAtPath:path]) {
+        playBlock(path);
+    } else {
+        [self.client downloadFileWithId:fileId priority:32 completion:^(NSString *downloadedPath, NSDictionary *file) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                playBlock(downloadedPath);
+            });
+        }];
+    }
+}
+
+- (void)openDocumentForMessage:(TGMessage *)message {
+    int32_t fileId = message.mediaFileId > 0 ? message.mediaFileId : message.thumbnailFileId;
+    if (fileId <= 0) {
+        [self presentSimpleAlertWithTitle:@"Nie można otworzyć" message:@"Brak pliku w wiadomości."];
+        return;
+    }
+    __weak typeof(self) weakSelf = self;
+    void (^openBlock)(NSString *path) = ^(NSString *path) {
+        if (weakSelf == nil || path.length == 0) {
+            return;
+        }
+        UIDocumentInteractionController *controller = [UIDocumentInteractionController interactionControllerWithURL:[NSURL fileURLWithPath:path]];
+        weakSelf.documentController = controller;
+        [controller presentPreviewAnimated:YES];
+    };
+    NSString *path = [self.client localPathForFileId:fileId];
+    if (path.length > 0 && [[NSFileManager defaultManager] fileExistsAtPath:path]) {
+        openBlock(path);
+    } else {
+        [self.client downloadFileWithId:fileId priority:32 completion:^(NSString *downloadedPath, NSDictionary *file) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                openBlock(downloadedPath);
+            });
+        }];
+    }
+}
+
+/// Tapping a failed bubble re-sends it (TDLib swaps the message id on success).
+- (void)resendFailedMessage:(TGMessage *)message {
+    __weak typeof(self) weakSelf = self;
+    [self.client resendMessages:@[@(message.messageId)] inChat:self.chatId completion:^(NSDictionary *error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            NSString *messageText = TGStringValue(error[@"message"]);
+            if (messageText.length > 0) {
+                [weakSelf presentSimpleAlertWithTitle:@"Nie udało się ponowić"
+                                                message:messageText];
+            }
+        });
+    }];
+}
+
+- (void)presentSimpleAlertWithTitle:(NSString *)title message:(NSString *)message {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:title
+                                                                    message:message
+                                                             preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)playVideoAtPath:(NSString *)path isLooping:(BOOL)isLooping {

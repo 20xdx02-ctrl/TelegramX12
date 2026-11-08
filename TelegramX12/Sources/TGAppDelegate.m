@@ -1,6 +1,7 @@
 #import "TGAppDelegate.h"
 #import "TGTheme.h"
 #import "TGTDLibClient.h"
+#import "TGChatViewController.h"
 #import "TGLoginViewController.h"
 #import "TGChatListViewController.h"
 #import "TGChatPlaceholderViewController.h"
@@ -9,6 +10,7 @@
 @interface TGAppDelegate () <TGTDLibClientDelegate>
 @property (nonatomic, strong) TGTDLibClient *client;
 @property (nonatomic, strong) UINavigationController *navigationController;
+@property (nonatomic, strong) UINavigationController *masterNavigation;
 @property (nonatomic, strong) UISplitViewController *splitViewController;
 @property (nonatomic, weak) TGLoginViewController *loginViewController;
 @property (nonatomic) BOOL readyScreenShown;
@@ -22,6 +24,12 @@
 
     self.client = [[TGTDLibClient alloc] init];
     self.client.delegate = self;
+    // iPad rotates between the two-pane split (landscape) and the plain phone
+    // layout (portrait); watch the orientation channel for the swap.
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(statusBarOrientationWillChange:)
+                                                 name:UIApplicationWillChangeStatusBarOrientationNotification
+                                               object:nil];
     // UIKit must finish attaching the initial controller before TDLib can
     // deliver a cached authorization state.  On iOS 12 an already-authorized
     // account can otherwise replace the root controller while launch is still
@@ -66,24 +74,120 @@
     self.loginViewController = nil;
 
     TGChatListViewController *chatList = [[TGChatListViewController alloc] initWithClient:self.client];
-    UINavigationController *navigation = [[UINavigationController alloc] initWithRootViewController:chatList];
+    self.masterNavigation = [[UINavigationController alloc] initWithRootViewController:chatList];
 
     // iPad / regular width: Telegram X style two pane layout — chat list on
-    // the left, conversation (or the placeholder) on the right. On compact
-    // devices the same split collapses into a plain navigation stack.
+    // the left, conversation (or the placeholder) on the right. In portrait
+    // the iPad falls back to the plain phone navigation stack instead.
     BOOL isPhone = [[UIDevice currentDevice] userInterfaceIdiom] == UIUserInterfaceIdiomPhone;
-    UISplitViewController *split = nil;
     if (!isPhone) {
-        split = [[UISplitViewController alloc] init];
-        UINavigationController *detail = [[UINavigationController alloc] initWithRootViewController:[[TGChatPlaceholderViewController alloc] init]];
-        split.viewControllers = @[navigation, detail];
-        split.minimumPrimaryColumnWidth = 320.0;
-        split.maximumPrimaryColumnWidth = 420.0;
-        split.presentsWithGesture = NO;
+        self.splitViewController = [self buildSplitViewControllerForMaster:self.masterNavigation];
     }
 
-    self.splitViewController = split;
-    [self setRootViewController:(split != nil ? (UIViewController *)split : (UIViewController *)navigation) animated:animated];
+    UIViewController *root = nil;
+    if (isPhone) {
+        root = self.masterNavigation;
+    } else if ([self iPadOrientationIsPortrait:[UIApplication sharedApplication].statusBarOrientation]) {
+        root = self.masterNavigation;
+        self.splitViewController = nil;
+    } else {
+        root = self.splitViewController;
+    }
+    [self setRootViewController:root animated:animated];
+}
+
+/// Builds the two-pane iPad layout with the chat list as the master column.
+- (UISplitViewController *)buildSplitViewControllerForMaster:(UINavigationController *)master {
+    UISplitViewController *split = [[UISplitViewController alloc] init];
+    UINavigationController *detail = [[UINavigationController alloc] initWithRootViewController:[[TGChatPlaceholderViewController alloc] init]];
+    split.viewControllers = @[master, detail];
+    split.minimumPrimaryColumnWidth = 320.0;
+    split.maximumPrimaryColumnWidth = 420.0;
+    split.presentsWithGesture = NO;
+    return split;
+}
+
+- (BOOL)iPadOrientationIsPortrait:(UIInterfaceOrientation)orientation {
+    return orientation != UIInterfaceOrientationLandscapeLeft && orientation != UIInterfaceOrientationLandscapeRight;
+}
+
+/// Notification: retry layout only on iPad while chats are visible.
+- (void)statusBarOrientationWillChange:(NSNotification *)notification {
+    if (!self.readyScreenShown) {
+        return;
+    }
+    if ([[UIDevice currentDevice] userInterfaceIdiom] == UIUserInterfaceIdiomPhone) {
+        return;
+    }
+    NSNumber *target = notification.userInfo[UIApplicationStatusBarOrientationUserInfoKey];
+    UIInterfaceOrientation orientation = (UIInterfaceOrientation)target.integerValue;
+    BOOL targetPortrait = [self iPadOrientationIsPortrait:orientation];
+    BOOL currentPortrait = (self.window.rootViewController != self.splitViewController);
+    if (targetPortrait == currentPortrait) {
+        return;
+    }
+    if (targetPortrait) {
+        [self collapseIpadSplitToPortraitAnimated:NO];
+    } else {
+        [self expandIpadToSplitAnimated:NO];
+    }
+}
+
+/// Portrait: every controller already lives in the master phone stack, so the
+/// split view is simply dropped and the master stack becomes the root.
+- (void)collapseIpadSplitToPortraitAnimated:(BOOL)animated {
+    if (self.splitViewController == nil) {
+        return;
+    }
+    TGChatViewController *openChat = [self currentlyOpenChat];
+    if (openChat != nil && self.masterNavigation.viewControllers.lastObject != openChat) {
+        UINavigationController *detail = [self.splitViewController viewControllers].lastObject;
+        if ([detail isKindOfClass:[UINavigationController class]]) {
+            NSMutableArray *detailControllers = [((UINavigationController *)detail).viewControllers mutableCopy];
+            [detailControllers removeObject:openChat];
+            ((UINavigationController *)detail).viewControllers = detailControllers;
+        }
+        [self.masterNavigation pushViewController:openChat animated:NO];
+    }
+    self.splitViewController = nil;
+    [self setRootViewController:self.masterNavigation animated:animated];
+}
+
+/// Landscape: rebuild the two-pane layout, moving any open chat from the
+/// phone stack into the detail column.
+- (void)expandIpadToSplitAnimated:(BOOL)animated {
+    NSMutableArray *masterControllers = [self.masterNavigation.viewControllers mutableCopy];
+    UIViewController *top = masterControllers.lastObject;
+    TGChatViewController *openChat = nil;
+    if ([top isKindOfClass:[TGChatViewController class]]) {
+        openChat = (TGChatViewController *)top;
+        [masterControllers removeLastObject];
+    }
+    [self.masterNavigation setViewControllers:masterControllers animated:NO];
+
+    self.splitViewController = [self buildSplitViewControllerForMaster:self.masterNavigation];
+    if (openChat != nil) {
+        UINavigationController *chatStack = [[UINavigationController alloc] initWithRootViewController:openChat];
+        self.splitViewController.viewControllers = @[self.masterNavigation, chatStack];
+    }
+    [self setRootViewController:self.splitViewController animated:animated];
+}
+
+/// Looks up a chat controller that is on screen: top of the detail column
+/// when the split is active, otherwise top of the phone stack.
+- (TGChatViewController *)currentlyOpenChat {
+    UINavigationController *detail = [self.splitViewController viewControllers].lastObject;
+    if ([detail isKindOfClass:[UINavigationController class]]) {
+        UIViewController *top = detail.viewControllers.lastObject;
+        if ([top isKindOfClass:[TGChatViewController class]]) {
+            return (TGChatViewController *)top;
+        }
+    }
+    UIViewController *masterTop = self.masterNavigation.viewControllers.lastObject;
+    if ([masterTop isKindOfClass:[TGChatViewController class]]) {
+        return (TGChatViewController *)masterTop;
+    }
+    return nil;
 }
 
 - (void)setRootViewController:(UIViewController *)viewController animated:(BOOL)animated {

@@ -96,7 +96,14 @@ static NSString *TGLocalPathFromFile(NSDictionary *file) {
 }
 
 NSString *TGMessageContentType(NSDictionary *content) {
-    return TGStringValue(content[@"@type"]);
+    NSString *type = TGStringValue(content[@"@type"]);
+    // While a message is still being sent TDLib carries the input content
+    // (inputMessagePhoto…). Normalize it to the delivered form so pending
+    // messages render identically to confirmed ones.
+    if ([type hasPrefix:@"inputMessage"] && type.length > [@"inputMessage" length]) {
+        type = [NSString stringWithFormat:@"message%@", [type substringFromIndex:[@"inputMessage" length]]];
+    }
+    return type;
 }
 
 BOOL TGMessageContentIsService(NSDictionary *content) {
@@ -450,6 +457,15 @@ NSString *TGMessagePreviewText(NSDictionary *content) {
                     NSString *dataStr = TGStringValue(minithumb[@"data"]);
                     if (dataStr.length > 0) {
                         self.minithumbnailData = [[NSData alloc] initWithBase64EncodedString:dataStr options:NSDataBase64DecodingIgnoreUnknownCharacters];
+                    }
+                }
+
+                // Pending sends carry inputMessagePhoto.photo.photo as a bare
+                // inputFileLocal; use its path for an instant local preview.
+                if (self.mediaLocalPath.length == 0) {
+                    NSString *pendingPath = TGStringValue(photo[@"photo"][@"path"]);
+                    if (pendingPath.length > 0 && [[NSFileManager defaultManager] fileExistsAtPath:pendingPath]) {
+                        self.mediaLocalPath = pendingPath;
                     }
                 }
             }

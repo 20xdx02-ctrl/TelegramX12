@@ -758,6 +758,27 @@ static int32_t TGStickerFileId(NSDictionary *sticker) {
     [self sendRequest:@{@"@type": @"closeChat", @"chat_id": @(chatId)}];
 }
 
+- (void)resendMessages:(NSArray<NSNumber *> *)messageIds
+                inChat:(int64_t)chatId
+            completion:(void (^)(NSDictionary *))completion {
+    NSDictionary *request = @{
+        @"@type": @"resendMessages",
+        @"chat_id": @(chatId),
+        @"message_ids": messageIds ?: @[]
+    };
+    [self sendRequest:request completion:^(NSDictionary *response) {
+        NSString *type = TGStringValue(response[@"@type"]);
+        if (completion == nil) {
+            return;
+        }
+        if ([type isEqualToString:@"messages"] || [type isEqualToString:@"ok"]) {
+            completion(nil);
+        } else {
+            completion(response);
+        }
+    }];
+}
+
 #pragma mark - Caches
 
 - (NSDictionary *)chatWithId:(int64_t)chatId {

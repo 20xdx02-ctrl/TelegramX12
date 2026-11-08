@@ -31,6 +31,105 @@
 	</array>
 	<key>UILaunchScreen</key>
 	<dict/>
+	<key>UILaunchImages</key>
+	<array>
+		<dict>
+			<key>UILaunchImageName</key>
+			<string>Launch-640x1136</string>
+			<key>UILaunchImageOrientation</key>
+			<string>Portrait</string>
+			<key>UILaunchImageSize</key>
+			<string>{640, 1136}</string>
+		</dict>
+		<dict>
+			<key>UILaunchImageName</key>
+			<string>Launch-750x1334</string>
+			<key>UILaunchImageOrientation</key>
+			<string>Portrait</string>
+			<key>UILaunchImageSize</key>
+			<string>{750, 1334}</string>
+		</dict>
+		<dict>
+			<key>UILaunchImageName</key>
+			<string>Launch-1242x2208</string>
+			<key>UILaunchImageOrientation</key>
+			<string>Portrait</string>
+			<key>UILaunchImageSize</key>
+			<string>{1242, 2208}</string>
+		</dict>
+		<dict>
+			<key>UILaunchImageName</key>
+			<string>Launch-2208x1242</string>
+			<key>UILaunchImageOrientation</key>
+			<string>Landscape</string>
+			<key>UILaunchImageSize</key>
+			<string>{2208, 1242}</string>
+		</dict>
+		<dict>
+			<key>UILaunchImageName</key>
+			<string>Launch-768x1024</string>
+			<key>UILaunchImageOrientation</key>
+			<string>Portrait</string>
+			<key>UILaunchImageSize</key>
+			<string>{768, 1024}</string>
+		</dict>
+		<dict>
+			<key>UILaunchImageName</key>
+			<string>Launch-1024x768</string>
+			<key>UILaunchImageOrientation</key>
+			<string>Landscape</string>
+			<key>UILaunchImageSize</key>
+			<string>{1024, 768}</string>
+		</dict>
+		<dict>
+			<key>UILaunchImageName</key>
+			<string>Launch-1536x2048</string>
+			<key>UILaunchImageOrientation</key>
+			<string>Portrait</string>
+			<key>UILaunchImageSize</key>
+			<string>{1536, 2048}</string>
+		</dict>
+		<dict>
+			<key>UILaunchImageName</key>
+			<string>Launch-2048x1536</string>
+			<key>UILaunchImageOrientation</key>
+			<string>Landscape</string>
+			<key>UILaunchImageSize</key>
+			<string>{2048, 1536}</string>
+		</dict>
+		<dict>
+			<key>UILaunchImageName</key>
+			<string>Launch-1668x2224</string>
+			<key>UILaunchImageOrientation</key>
+			<string>Portrait</string>
+			<key>UILaunchImageSize</key>
+			<string>{1668, 2224}</string>
+		</dict>
+		<dict>
+			<key>UILaunchImageName</key>
+			<string>Launch-2224x1668</string>
+			<key>UILaunchImageOrientation</key>
+			<string>Landscape</string>
+			<key>UILaunchImageSize</key>
+			<string>{2224, 1668}</string>
+		</dict>
+		<dict>
+			<key>UILaunchImageName</key>
+			<string>Launch-2048x2732</string>
+			<key>UILaunchImageOrientation</key>
+			<string>Portrait</string>
+			<key>UILaunchImageSize</key>
+			<string>{2048, 2732}</string>
+		</dict>
+		<dict>
+			<key>UILaunchImageName</key>
+			<string>Launch-2732x2048</string>
+			<key>UILaunchImageOrientation</key>
+			<string>Landscape</string>
+			<key>UILaunchImageSize</key>
+			<string>{2732, 2048}</string>
+		</dict>
+	</array>
 	<key>UIRequiresFullScreen</key>
 	<true/>
 	<key>UISupportedInterfaceOrientations</key>
