@@ -441,6 +441,12 @@
     album.isAlbum = YES;
     album.mediaAlbumId = first.mediaAlbumId;
     album.albumMessages = members;
+    album.forwardInfo = first.forwardInfo;
+    album.replyToMessageId = first.replyToMessageId;
+    album.replyToText = first.replyToText;
+    album.replyToSenderName = first.replyToSenderName;
+    album.replyToOrigin = first.replyToOrigin;
+    album.editDate = first.editDate;
     album.messageType = (first.messageType == TGMessageTypeVideo) ? TGMessageTypeVideo : TGMessageTypePhoto;
     for (TGMessage *member in members) {
         if (member.mediaCaption.length > 0 && album.mediaCaption.length == 0) {
