@@ -30,6 +30,17 @@ NS_ASSUME_NONNULL_BEGIN
 + (NSString *)chatDayHeadingStringForTimestamp:(int32_t)timestamp;
 + (NSString *)initialsForTitle:(NSString *)title;
 + (UIColor *)avatarColorForIdentifier:(int64_t)identifier;
+/// Stable accent colour used for author names in group chats.
++ (UIColor *)senderColorForIdentifier:(int64_t)identifier;
+/// Strong blue used for links inside incoming bubbles.
++ (UIColor *)linkColor;
+/// Light blue used for links on the accent-coloured outgoing bubble.
++ (UIColor *)outgoingLinkColor;
+/// Builds message text with URLs/emails highlighted (and tappable).
++ (NSAttributedString *)attributedStringForText:(NSString *)text
+                                           font:(UIFont *)font
+                                          color:(UIColor *)color
+                                      linkColor:(UIColor *)linkColor;
 
 + (BOOL)isRTL;
 

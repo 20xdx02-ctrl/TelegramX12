@@ -98,6 +98,12 @@ FOUNDATION_EXPORT NSString *TGDurationString(int32_t seconds);
 /// Unix timestamp of the last edit; 0 when the message was never edited.
 @property (nonatomic) int32_t editDate;
 
+// Albums (photo/video collages). A synthetic row merges consecutive messages
+// that share the same TDLib `media_album_id`.
+@property (nonatomic) int64_t mediaAlbumId;
+@property (nonatomic) BOOL isAlbum;
+@property (nonatomic, strong, nullable) NSArray<TGMessage *> *albumMessages;
+
 // Media attributes
 /// Full-resolution file id for photos (the largest available size).
 /// Used by the photo viewer; the bubble thumbnail uses mediaFileId.

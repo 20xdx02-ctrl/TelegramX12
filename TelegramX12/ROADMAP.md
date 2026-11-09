@@ -24,6 +24,7 @@ Priorytety: **P1** = bez tego codzienne używanie boli, **P2** = ważne, **P3** 
 - [ ] **Wiadomości głosowe** — `messageVoiceNote`: pasek z długością + odtwarzanie (`AVAudioPlayer`); rozwiązać dekodowanie opus/ogg.
 - [ ] **Postęp wysyłki** — `updateFile` (upload progress): spinner/wprost procent w miejscu wysyłanej wiadomości.
 - [ ] **Ponawianie nieudanych wysyłek** — tap na bańce z błędem → resend.
+- [x] **Kolaże / albumy zdjęć** — grupowanie po `media_album_id`, siatka 2/3/4 zdjęć, tap otwiera pełny rozmiar.
 
 ## 2. Interakcja z wiadomościami (P1)
 
@@ -32,6 +33,8 @@ Priorytety: **P1** = bez tego codzienne używanie boli, **P2** = ważne, **P3** 
 - [x] **Edycja** — `editMessageText` + znaczek „edytowano”.
 - [x] **Przekazywanie** — `forwardMessages` + prosty wybierak czatu.
 - [x] **Kopiowanie tekstu** z bańki.
+- [x] **Podświetlanie linków** — adresy URL/e-mail na niebiesko, tap otwiera w Safari.
+- [x] **Czytelniejszy wygląd** — kolory autorów w grupach, linki w podpisach, dopracowane bąbelki multimediów.
 - [ ] **Link preview** — `formattedText.entities` / `messageText.web_page`: tytuł, opis, miniatura.
 
 ## 3. Powiadomienia (P1)

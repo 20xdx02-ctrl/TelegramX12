@@ -174,6 +174,64 @@
     return [UIColor tg_colorWithHex:[colors[index] unsignedIntValue]];
 }
 
++ (UIColor *)senderColorForIdentifier:(int64_t)identifier {
+    static NSArray<NSNumber *> *colors;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        // Slightly deeper tones so 12pt names stay readable on white.
+        colors = @[
+            @0xD9524F, @0x3E9E4F, @0xB88A00, @0xC56A1E,
+            @0x7A5AB8, @0x2F7FBF, @0xC2467A, @0x3A9A9C
+        ];
+    });
+    NSUInteger index = (NSUInteger)(identifier < 0 ? -identifier : identifier) % colors.count;
+    return [UIColor tg_colorWithHex:[colors[index] unsignedIntValue]];
+}
+
++ (UIColor *)linkColor {
+    return [UIColor tg_colorWithHex:0x1A7FD4];
+}
+
++ (UIColor *)outgoingLinkColor {
+    return [UIColor tg_colorWithHex:0xCDEFFF];
+}
+
++ (NSAttributedString *)attributedStringForText:(NSString *)text
+                                           font:(UIFont *)font
+                                          color:(UIColor *)color
+                                      linkColor:(UIColor *)linkColor {
+    if (text.length == 0) {
+        return [[NSAttributedString alloc] initWithString:@""];
+    }
+    NSMutableAttributedString *attributed = [[NSMutableAttributedString alloc] initWithString:text];
+    NSRange fullRange = NSMakeRange(0, text.length);
+    [attributed addAttributes:@{
+        NSFontAttributeName: font,
+        NSForegroundColorAttributeName: color
+    } range:fullRange];
+
+    static NSDataDetector *detector;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        detector = [NSDataDetector dataDetectorWithTypes:NSTextCheckingTypeLink error:nil];
+    });
+    if (detector != nil) {
+        [detector enumerateMatchesInString:text
+                                   options:0
+                                     range:fullRange
+                                usingBlock:^(NSTextCheckingResult *result, NSMatchingFlags flags, BOOL *stop) {
+            if (result.range.location == NSNotFound || result.URL == nil) {
+                return;
+            }
+            [attributed addAttributes:@{
+                NSForegroundColorAttributeName: linkColor,
+                NSLinkAttributeName: result.URL
+            } range:result.range];
+        }];
+    }
+    return attributed;
+}
+
 + (BOOL)isRTL {
     return [UIApplication sharedApplication].userInterfaceLayoutDirection == UIUserInterfaceLayoutDirectionRightToLeft;
 }

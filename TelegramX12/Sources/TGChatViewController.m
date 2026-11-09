@@ -313,7 +313,7 @@
 
     [self.messages addObjectsFromArray:loaded];
     [self rebuildMessageIndex];
-    [self recomputeDateDividers];
+    [self rebuildMessageLayout];
     self.totalCount = MAX(totalCount, (NSInteger)self.messages.count);
 }
 
@@ -376,7 +376,7 @@
 
             NSIndexSet *indexes = [NSIndexSet indexSetWithIndexesInRange:NSMakeRange(0, newMessages.count)];
             [weakSelf.messages insertObjects:newMessages atIndexes:indexes];
-            [weakSelf recomputeDateDividers];
+            [weakSelf rebuildMessageLayout];
             [weakSelf.tableView reloadData];
             [weakSelf.tableView layoutIfNeeded];
 
@@ -392,8 +392,131 @@
 - (void)rebuildMessageIndex {
     [self.messageIndexById removeAllObjects];
     [self.messages enumerateObjectsUsingBlock:^(TGMessage *message, NSUInteger index, BOOL *stop) {
-        self.messageIndexById[@(message.messageId)] = @(index);
+        if (message.isAlbum) {
+            for (TGMessage *member in message.albumMessages) {
+                if (member.messageId != 0) {
+                    self.messageIndexById[@(member.messageId)] = @(index);
+                }
+            }
+        }
+        if (message.messageId != 0) {
+            self.messageIndexById[@(message.messageId)] = @(index);
+        }
     }];
+}
+
+#pragma mark - Albums
+
+/// Splits every synthetic album row back into its member messages.
+- (void)expandAlbums {
+    NSMutableArray<TGMessage *> *expanded = [NSMutableArray arrayWithCapacity:self.messages.count];
+    for (TGMessage *message in self.messages) {
+        if (message.isAlbum && message.albumMessages.count > 0) {
+            [expanded addObjectsFromArray:message.albumMessages];
+        } else {
+            [expanded addObject:message];
+        }
+    }
+    [self.messages removeAllObjects];
+    [self.messages addObjectsFromArray:expanded];
+    [self rebuildMessageIndex];
+}
+
+- (TGMessage *)albumMessageWithMembers:(NSArray<TGMessage *> *)members {
+    TGMessage *first = members.firstObject;
+    TGMessage *last = members.lastObject;
+    TGMessage *album = [[TGMessage alloc] init];
+    // Use the last member id: it lets the unread divider detect a partially
+    // unread album correctly (first id may already be below last_read_inbox).
+    album.messageId = last.messageId;
+    album.chatId = self.chatId;
+    album.date = first.date;
+    album.isOutgoing = first.isOutgoing;
+    album.senderId = first.senderId;
+    album.senderIsUser = first.senderIsUser;
+    album.raw = first.raw;
+    album.isRead = last.isRead;
+    album.isSending = last.isSending;
+    album.isFailed = last.isFailed;
+    album.isAlbum = YES;
+    album.mediaAlbumId = first.mediaAlbumId;
+    album.albumMessages = members;
+    album.messageType = (first.messageType == TGMessageTypeVideo) ? TGMessageTypeVideo : TGMessageTypePhoto;
+    for (TGMessage *member in members) {
+        if (member.mediaCaption.length > 0 && album.mediaCaption.length == 0) {
+            album.mediaCaption = member.mediaCaption;
+        }
+        album.isSending = album.isSending || member.isSending;
+        album.isFailed = album.isFailed || member.isFailed;
+    }
+    return album;
+}
+
+/// Merges consecutive photo/video messages that belong to the same TDLib
+/// media album into one synthetic collage row.
+- (void)recomputeAlbums {
+    [self expandAlbums];
+
+    NSMutableArray<TGMessage *> *result = [NSMutableArray arrayWithCapacity:self.messages.count];
+    NSUInteger index = 0;
+    while (index < self.messages.count) {
+        TGMessage *message = self.messages[index];
+        BOOL groupable = !message.isService &&
+            message.mediaAlbumId != 0 &&
+            (message.messageType == TGMessageTypePhoto || message.messageType == TGMessageTypeVideo);
+        if (!groupable) {
+            [result addObject:message];
+            index += 1;
+            continue;
+        }
+
+        NSMutableArray<TGMessage *> *members = [NSMutableArray arrayWithObject:message];
+        NSUInteger next = index + 1;
+        while (next < self.messages.count) {
+            TGMessage *candidate = self.messages[next];
+            if (candidate.isService ||
+                candidate.mediaAlbumId != message.mediaAlbumId ||
+                candidate.senderId != message.senderId ||
+                candidate.isOutgoing != message.isOutgoing ||
+                (candidate.messageType != TGMessageTypePhoto && candidate.messageType != TGMessageTypeVideo)) {
+                break;
+            }
+            [members addObject:candidate];
+            next += 1;
+        }
+
+        if (members.count >= 2) {
+            [result addObject:[self albumMessageWithMembers:members]];
+        } else {
+            [result addObject:message];
+        }
+        index = next;
+    }
+
+    [self.messages removeAllObjects];
+    [self.messages addObjectsFromArray:result];
+    [self rebuildMessageIndex];
+}
+
+/// Rebuilds album collages and day dividers after the message list changes.
+- (void)rebuildMessageLayout {
+    [self recomputeAlbums];
+    [self recomputeDateDividers];
+}
+
+- (NSArray<NSNumber *> *)messageIdsForMessage:(TGMessage *)message {
+    if (message.isAlbum) {
+        NSMutableArray<NSNumber *> *ids = [NSMutableArray arrayWithCapacity:message.albumMessages.count];
+        for (TGMessage *member in message.albumMessages) {
+            if (member.messageId != 0) {
+                [ids addObject:@(member.messageId)];
+            }
+        }
+        if (ids.count > 0) {
+            return ids;
+        }
+    }
+    return @[@(message.messageId)];
 }
 
 #pragma mark - Unread divider
@@ -725,14 +848,16 @@
 }
 
 - (void)confirmDeleteMessage:(TGMessage *)message {
-    NSString *title = message.isOutgoing ? @"Usunąć wiadomość u wszystkich?" : @"Usunąć wiadomość?";
+    NSString *title = message.isOutgoing
+        ? (message.isAlbum ? @"Usunąć album u wszystkich?" : @"Usunąć wiadomość u wszystkich?")
+        : (message.isAlbum ? @"Usunąć album?" : @"Usunąć wiadomość?");
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:title
                                                                    message:nil
                                                             preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"Anuluj" style:UIAlertActionStyleCancel handler:nil]];
     __weak typeof(self) weakSelf = self;
     [alert addAction:[UIAlertAction actionWithTitle:@"Usuń" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
-        [weakSelf.client deleteMessages:@[@(message.messageId)]
+        [weakSelf.client deleteMessages:[weakSelf messageIdsForMessage:message]
                                   inChat:weakSelf.chatId
                                   revoke:message.isOutgoing
                               completion:^(NSDictionary *error) {
@@ -754,7 +879,7 @@
                                                                            excludingChatId:self.chatId
                                                                                 completion:^(int64_t chatId, NSString *title) {
         [weakSelf dismissViewControllerAnimated:YES completion:^{
-            [weakSelf.client forwardMessages:@[@(message.messageId)]
+            [weakSelf.client forwardMessages:[weakSelf messageIdsForMessage:message]
                                     fromChat:weakSelf.chatId
                                       toChat:chatId
                                   completion:^(NSArray<NSDictionary *> *messages, NSDictionary *error) {
@@ -817,6 +942,7 @@
         if (TGInt64Value(update[@"chat_id"]) != self.chatId) {
             return;
         }
+        [self expandAlbums];
         int64_t messageId = TGInt64Value(update[@"message_id"]);
         NSNumber *indexNumber = self.messageIndexById[@(messageId)];
         if (indexNumber == nil) {
@@ -830,6 +956,7 @@
         NSMutableDictionary *raw = [message.raw mutableCopy] ?: [NSMutableDictionary dictionary];
         raw[@"content"] = update[@"new_content"] ?: @{};
         [message updateWithDictionary:raw];
+        [self rebuildMessageLayout];
         [self.tableView reloadData];
         return;
     }
@@ -838,6 +965,7 @@
         if (TGInt64Value(update[@"chat_id"]) != self.chatId) {
             return;
         }
+        [self expandAlbums];
         int64_t messageId = TGInt64Value(update[@"message_id"]);
         NSNumber *indexNumber = self.messageIndexById[@(messageId)];
         if (indexNumber == nil) {
@@ -851,8 +979,8 @@
         NSMutableDictionary *raw = [message.raw mutableCopy] ?: [NSMutableDictionary dictionary];
         raw[@"edit_date"] = update[@"edit_date"] ?: @0;
         [message updateWithDictionary:raw];
-        NSIndexPath *indexPath = [NSIndexPath indexPathForRow:(NSInteger)index inSection:0];
-        [self.tableView reloadRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationNone];
+        [self rebuildMessageLayout];
+        [self.tableView reloadData];
         return;
     }
 
@@ -864,6 +992,7 @@
         if (![messageIds isKindOfClass:[NSArray class]]) {
             return;
         }
+        [self expandAlbums];
         NSMutableIndexSet *indexes = [NSMutableIndexSet indexSet];
         for (id rawId in messageIds) {
             NSNumber *indexNumber = self.messageIndexById[@(TGInt64Value(rawId))];
@@ -875,8 +1004,7 @@
             return;
         }
         [self.messages removeObjectsAtIndexes:indexes];
-        [self rebuildMessageIndex];
-        [self recomputeDateDividers];
+        [self rebuildMessageLayout];
         [self.tableView reloadData];
         [self updateEmptyState];
         return;
@@ -1272,6 +1400,7 @@
 }
 
 - (void)upsertMessageDictionary:(NSDictionary *)dictionary scrollToBottom:(BOOL)scroll forceScroll:(BOOL)forceScroll {
+    [self expandAlbums];
     TGMessage *message = [TGMessage messageWithDictionary:dictionary];
     if (message.messageId == 0) {
         return;
@@ -1283,6 +1412,7 @@
     if (existingIndex != nil && existingIndex.unsignedIntegerValue < self.messages.count) {
         TGMessage *existing = self.messages[existingIndex.unsignedIntegerValue];
         [existing updateWithDictionary:dictionary];
+        [self rebuildMessageLayout];
         [self.tableView reloadData];
     } else {
         NSUInteger insertIndex = self.messages.count;
@@ -1293,8 +1423,7 @@
             }
         }
         [self.messages insertObject:message atIndex:insertIndex];
-        [self rebuildMessageIndex];
-        [self recomputeDateDividers];
+        [self rebuildMessageLayout];
         [self.tableView reloadData];
     }
 
@@ -1309,6 +1438,7 @@
 }
 
 - (void)replaceMessageId:(int64_t)oldMessageId withDictionary:(NSDictionary *)dictionary {
+    [self expandAlbums];
     TGMessage *newMessage = [TGMessage messageWithDictionary:dictionary];
     if (newMessage.messageId == 0) {
         return;
@@ -1317,17 +1447,15 @@
     NSNumber *oldIndexNumber = self.messageIndexById[@(oldMessageId)];
     if (oldIndexNumber != nil && oldIndexNumber.unsignedIntegerValue < self.messages.count) {
         self.messages[oldIndexNumber.unsignedIntegerValue] = newMessage;
-        [self rebuildMessageIndex];
     } else {
         NSNumber *existingIndex = self.messageIndexById[@(newMessage.messageId)];
         if (existingIndex != nil && existingIndex.unsignedIntegerValue < self.messages.count) {
             self.messages[existingIndex.unsignedIntegerValue] = newMessage;
         } else {
             [self.messages addObject:newMessage];
-            [self rebuildMessageIndex];
-            [self recomputeDateDividers];
         }
     }
+    [self rebuildMessageLayout];
     [self.tableView reloadData];
     [self updateEmptyState];
 
@@ -1387,6 +1515,12 @@
     cell.onLongPress = ^(TGMessage *msg) {
         [weakSelf presentMessageActionsForMessage:msg];
     };
+    cell.onLinkTap = ^(NSURL *url) {
+        [weakSelf openLink:url];
+    };
+    cell.onAlbumItemTap = ^(TGMessage *msg, NSInteger index) {
+        [weakSelf openAlbumItemInMessage:msg index:index];
+    };
     return cell;
 }
 
@@ -1396,9 +1530,25 @@
     }
 }
 
+- (void)openLink:(NSURL *)url {
+    if (url == nil) {
+        return;
+    }
+    UIApplication *application = [UIApplication sharedApplication];
+    [application openURL:url options:@{} completionHandler:nil];
+}
+
+- (void)openAlbumItemInMessage:(TGMessage *)message index:(NSInteger)index {
+    if (!message.isAlbum || message.albumMessages.count == 0) {
+        return;
+    }
+    NSInteger safeIndex = MAX(0, MIN(index, (NSInteger)message.albumMessages.count - 1));
+    TGMessage *item = message.albumMessages[(NSUInteger)safeIndex];
+    [self handleMediaTapForMessage:item];
+}
+
 - (void)handleMediaTapForMessage:(TGMessage *)message {
-    if (message.messageType == TGMessageTypePhoto) {
-        // Open the photo viewer immediately with the best locally-available image
+    if (message.messageType == TGMessageTypePhoto) {        // Open the photo viewer immediately with the best locally-available image
         // (thumbnail or medium-res), then upgrade to full-resolution in the background.
         UIImage *placeholderImage = nil;
 

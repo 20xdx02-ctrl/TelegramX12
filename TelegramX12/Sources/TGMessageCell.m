@@ -18,7 +18,7 @@ static const CGFloat TGMessageCellAvatarSlot = TGMessageCellAvatarSize + TGMessa
 static const CGFloat TGMessageCellReplyBlockHeight = 38.0;
 static const CGFloat TGMessageCellForwardLineHeight = 17.0;
 
-@interface TGMessageCell ()
+@interface TGMessageCell () <UIGestureRecognizerDelegate>
 
 @property (nonatomic, strong) UIView *bubbleView;
 @property (nonatomic, strong) UILabel *senderLabel;
@@ -32,6 +32,13 @@ static const CGFloat TGMessageCellForwardLineHeight = 17.0;
 @property (nonatomic, strong) UILabel *replyNameLabel;
 @property (nonatomic, strong) UILabel *replyTextLabel;
 @property (nonatomic, strong) UILabel *forwardLabel;
+
+// Album collage grid (up to four thumbnails).
+@property (nonatomic, strong) NSArray<UIImageView *> *albumImageViews;
+
+// Link taps inside text/captions.
+@property (nonatomic, strong) UITapGestureRecognizer *bodyLinkTap;
+@property (nonatomic, strong) UITapGestureRecognizer *captionLinkTap;
 
 // Media views
 @property (nonatomic, strong) UIView *mediaContainer;
@@ -153,6 +160,20 @@ static const CGFloat TGMessageCellForwardLineHeight = 17.0;
         _mediaImageView.clipsToBounds = YES;
         [_mediaContainer addSubview:_mediaImageView];
 
+        // Album collage thumbnails (2/3/4-up grid), hidden for single media.
+        NSMutableArray<UIImageView *> *albumViews = [NSMutableArray arrayWithCapacity:4];
+        for (NSInteger i = 0; i < 4; i++) {
+            UIImageView *albumView = [[UIImageView alloc] initWithFrame:CGRectZero];
+            albumView.contentMode = UIViewContentModeScaleAspectFill;
+            albumView.clipsToBounds = YES;
+            albumView.hidden = YES;
+            albumView.tag = 100 + i;
+            albumView.backgroundColor = [UIColor colorWithWhite:0.88 alpha:1.0];
+            [_mediaContainer addSubview:albumView];
+            [albumViews addObject:albumView];
+        }
+        _albumImageViews = [albumViews copy];
+
         _mediaBadgeLabel = [[UILabel alloc] initWithFrame:CGRectZero];
         _mediaBadgeLabel.font = [TGTheme semiboldFontOfSize:11.0];
         _mediaBadgeLabel.textColor = [UIColor whiteColor];
@@ -178,13 +199,23 @@ static const CGFloat TGMessageCellForwardLineHeight = 17.0;
         _playTriangleLabel.textAlignment = NSTextAlignmentCenter;
         [_playButtonView addSubview:_playTriangleLabel];
 
-        UITapGestureRecognizer *mediaTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(handleMediaTap)];
+        UITapGestureRecognizer *mediaTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(handleMediaTapGesture:)];
         [_mediaContainer addGestureRecognizer:mediaTap];
+
+        _bodyLinkTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(handleTextLinkTap:)];
+        _bodyLinkTap.delegate = self;
+        [_bodyLabel addGestureRecognizer:_bodyLinkTap];
+        _bodyLabel.userInteractionEnabled = YES;
 
         _captionLabel = [[UILabel alloc] initWithFrame:CGRectZero];
         _captionLabel.numberOfLines = 0;
         _captionLabel.font = [TGTheme regularFontOfSize:TGMessageCellTextSize];
         [_bubbleView addSubview:_captionLabel];
+
+        _captionLinkTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(handleTextLinkTap:)];
+        _captionLinkTap.delegate = self;
+        [_captionLabel addGestureRecognizer:_captionLinkTap];
+        _captionLabel.userInteractionEnabled = YES;
 
         // Document / Audio card
         _docIconView = [[UIView alloc] initWithFrame:CGRectZero];
@@ -274,6 +305,8 @@ static const CGFloat TGMessageCellForwardLineHeight = 17.0;
 
         // Cell-level tap: retries failed sends and opens file/audio cards.
         UITapGestureRecognizer *cellTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(handleCellTap)];
+        [cellTap requireGestureRecognizerToFail:self.bodyLinkTap];
+        [cellTap requireGestureRecognizerToFail:self.captionLinkTap];
         [self.contentView addGestureRecognizer:cellTap];
 
         // Long press: shows the message action sheet (copy / reply / delete / forward).
@@ -307,6 +340,82 @@ static const CGFloat TGMessageCellForwardLineHeight = 17.0;
     if (self.onMediaTap && self.message != nil) {
         self.onMediaTap(self.message);
     }
+}
+
+- (void)handleMediaTapGesture:(UITapGestureRecognizer *)recognizer {
+    if (self.message.isAlbum) {
+        NSInteger index = [self albumIndexAtPoint:[recognizer locationInView:self.mediaContainer]];
+        if (index < 0) {
+            index = 0;
+        }
+        if (self.onAlbumItemTap != nil) {
+            self.onAlbumItemTap(self.message, index);
+        }
+        return;
+    }
+    [self handleMediaTap];
+}
+
+#pragma mark - Links
+
+- (NSURL *)linkAtPoint:(CGPoint)point inLabel:(UILabel *)label {
+    NSAttributedString *text = label.attributedText;
+    if (text.length == 0 || label.bounds.size.width <= 0) {
+        return nil;
+    }
+    NSTextStorage *storage = [[NSTextStorage alloc] initWithAttributedString:text];
+    NSLayoutManager *layoutManager = [[NSLayoutManager alloc] init];
+    NSTextContainer *container = [[NSTextContainer alloc] initWithSize:label.bounds.size];
+    container.lineFragmentPadding = 0.0;
+    container.maximumNumberOfLines = label.numberOfLines;
+    container.lineBreakMode = label.lineBreakMode;
+    [storage addLayoutManager:layoutManager];
+    [layoutManager addTextContainer:container];
+
+    CGRect usedRect = [layoutManager usedRectForTextContainer:container];
+    CGPoint adjusted = point;
+    adjusted.y -= MAX(0.0, (CGRectGetHeight(label.bounds) - CGRectGetHeight(usedRect)) / 2.0);
+    adjusted.x -= MAX(0.0, (CGRectGetWidth(label.bounds) - CGRectGetWidth(usedRect)) / 2.0);
+    if (adjusted.x < 0.0 || adjusted.y < 0.0) {
+        return nil;
+    }
+    NSUInteger glyphIndex = [layoutManager glyphIndexForPoint:adjusted
+                                              inTextContainer:container
+                                   fractionOfDistanceThroughGlyph:NULL];
+    if (glyphIndex >= layoutManager.numberOfGlyphs) {
+        return nil;
+    }
+    NSUInteger charIndex = [layoutManager characterIndexForGlyphAtIndex:glyphIndex];
+    if (charIndex >= text.length) {
+        return nil;
+    }
+    id link = [text attribute:NSLinkAttributeName atIndex:charIndex effectiveRange:NULL];
+    if ([link isKindOfClass:[NSURL class]]) {
+        return (NSURL *)link;
+    }
+    if ([link isKindOfClass:[NSString class]] && [link length] > 0) {
+        return [NSURL URLWithString:(NSString *)link];
+    }
+    return nil;
+}
+
+- (void)handleTextLinkTap:(UITapGestureRecognizer *)recognizer {
+    UILabel *label = (UILabel *)recognizer.view;
+    if (![label isKindOfClass:[UILabel class]]) {
+        return;
+    }
+    NSURL *url = [self linkAtPoint:[recognizer locationInView:label] inLabel:label];
+    if (url != nil && self.onLinkTap != nil) {
+        self.onLinkTap(url);
+    }
+}
+
+- (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gestureRecognizer {
+    if (gestureRecognizer == self.bodyLinkTap || gestureRecognizer == self.captionLinkTap) {
+        UILabel *label = (UILabel *)gestureRecognizer.view;
+        return [self linkAtPoint:[gestureRecognizer locationInView:label] inLabel:label] != nil;
+    }
+    return YES;
 }
 
 - (void)handleStickerTap {
@@ -349,6 +458,11 @@ static const CGFloat TGMessageCellForwardLineHeight = 17.0;
     self.forwardLabel.hidden = YES;
     self.forwardLabel.text = nil;
     self.mediaImageView.image = nil;
+    self.mediaImageView.hidden = NO;
+    for (UIImageView *albumView in self.albumImageViews) {
+        albumView.image = nil;
+        albumView.hidden = YES;
+    }
     self.stickerImageView.image = nil;
     self.stickerEmojiLabel.hidden = YES;
     self.mediaBadgeLabel.hidden = YES;
@@ -369,6 +483,11 @@ static const CGFloat TGMessageCellForwardLineHeight = 17.0;
 + (CGSize)mediaSizeForMessage:(TGMessage *)message maxBubbleWidth:(CGFloat)maxBubbleWidth {
     CGFloat maxWidth = MIN(maxBubbleWidth, 260.0);
     CGFloat maxHeight = 300.0;
+
+    if (message.isAlbum) {
+        CGFloat width = MIN(maxBubbleWidth - 8.0, 280.0);
+        return CGSizeMake(width, [self albumHeightForItemCount:message.albumMessages.count]);
+    }
 
     if (message.messageType == TGMessageTypeSticker) {
         CGFloat size = 160.0;
@@ -418,6 +537,19 @@ static const CGFloat TGMessageCellForwardLineHeight = 17.0;
     }
 
     return CGSizeZero;
+}
+
++ (CGFloat)albumHeightForItemCount:(NSInteger)count {
+    if (count <= 1) {
+        return 140.0;
+    }
+    if (count == 2) {
+        return 150.0;
+    }
+    if (count == 3) {
+        return 200.0;
+    }
+    return 260.0;
 }
 
 + (CGSize)textSizeForString:(NSString *)text maxWidth:(CGFloat)maxWidth {
@@ -486,6 +618,51 @@ static const CGFloat TGMessageCellForwardLineHeight = 17.0;
 }
 
 #pragma mark - Configuration
+
+/// Body/caption text with clickable links in Telegram-like colours.
+- (NSAttributedString *)attributedTextForString:(NSString *)text outgoing:(BOOL)outgoing {
+    UIColor *color = outgoing ? [UIColor whiteColor] : [UIColor blackColor];
+    UIColor *linkColor = outgoing ? [TGTheme outgoingLinkColor] : [TGTheme linkColor];
+    return [TGTheme attributedStringForText:text
+                                       font:[TGTheme regularFontOfSize:TGMessageCellTextSize]
+                                      color:color
+                                  linkColor:linkColor];
+}
+
+- (void)configureAlbumForMessage:(TGMessage *)message client:(nullable TGTDLibClient *)client {
+    NSArray<TGMessage *> *items = message.albumMessages;
+    NSInteger visibleCount = MIN((NSInteger)items.count, 4);
+    for (NSInteger i = 0; i < (NSInteger)self.albumImageViews.count; i++) {
+        UIImageView *imageView = self.albumImageViews[(NSUInteger)i];
+        if (i < visibleCount) {
+            imageView.hidden = NO;
+            imageView.image = nil;
+            [self loadAlbumImageForMessage:items[(NSUInteger)i] intoImageView:imageView];
+        } else {
+            imageView.hidden = YES;
+            imageView.image = nil;
+        }
+    }
+    self.mediaImageView.hidden = YES;
+    self.playButtonView.hidden = YES;
+
+    NSInteger hiddenCount = MAX(0, (NSInteger)items.count - visibleCount);
+    if (hiddenCount > 0) {
+        self.mediaBadgeLabel.hidden = NO;
+        self.mediaBadgeLabel.text = [NSString stringWithFormat:@" +%ld ", (long)hiddenCount];
+    } else {
+        self.mediaBadgeLabel.hidden = YES;
+        self.mediaBadgeLabel.text = nil;
+    }
+
+    if (message.mediaCaption.length > 0) {
+        self.captionLabel.hidden = NO;
+        self.captionLabel.attributedText = [self attributedTextForString:message.mediaCaption outgoing:message.isOutgoing];
+    } else {
+        self.captionLabel.hidden = YES;
+        self.captionLabel.attributedText = nil;
+    }
+}
 
 - (void)configureWithMessage:(TGMessage *)message
                   showSender:(BOOL)showSender
@@ -562,7 +739,9 @@ static const CGFloat TGMessageCellForwardLineHeight = 17.0;
     _bodyLabel.textColor = message.isOutgoing ? [UIColor whiteColor] : [UIColor blackColor];
     _captionLabel.textColor = message.isOutgoing ? [UIColor whiteColor] : [UIColor blackColor];
     _timeLabel.textColor = message.isOutgoing ? [UIColor colorWithWhite:1.0 alpha:0.75] : [TGTheme secondaryTextColor];
-    _senderLabel.textColor = message.isOutgoing ? [UIColor colorWithWhite:1.0 alpha:0.9] : [TGTheme accentColor];
+    _senderLabel.textColor = message.isOutgoing
+        ? [UIColor colorWithWhite:1.0 alpha:0.9]
+        : [TGTheme senderColorForIdentifier:message.senderId];
     _senderLabel.text = senderName;
     _senderLabel.hidden = !(showSender && !message.isOutgoing);
     _timeLabel.text = [self timeTextForMessage:message];
@@ -605,7 +784,12 @@ static const CGFloat TGMessageCellForwardLineHeight = 17.0;
 
     // Reset visibility of media subviews
     _mediaContainer.hidden = YES;
+    _mediaImageView.hidden = NO;
     _mediaImageView.image = nil;
+    for (UIImageView *albumView in self.albumImageViews) {
+        albumView.hidden = YES;
+        albumView.image = nil;
+    }
     _mediaBadgeLabel.hidden = YES;
     _playButtonView.hidden = YES;
     _captionLabel.hidden = YES;
@@ -614,18 +798,25 @@ static const CGFloat TGMessageCellForwardLineHeight = 17.0;
     _docSubtitleLabel.hidden = YES;
     _bodyLabel.hidden = YES;
 
+    if (message.isAlbum) {
+        _mediaContainer.hidden = NO;
+        [self configureAlbumForMessage:message client:client];
+        [self setNeedsLayout];
+        return;
+    }
+
     switch (message.messageType) {
         case TGMessageTypeText:
         case TGMessageTypeUnsupported: {
             _bodyLabel.hidden = NO;
-            _bodyLabel.text = message.text.length > 0 ? message.text : @"Nieobsługiwana wiadomość";
+            _bodyLabel.attributedText = [self attributedTextForString:(message.text.length > 0 ? message.text : @"Nieobsługiwana wiadomość") outgoing:message.isOutgoing];
             break;
         }
         case TGMessageTypePhoto: {
             _mediaContainer.hidden = NO;
             if (message.mediaCaption.length > 0) {
                 _captionLabel.hidden = NO;
-                _captionLabel.text = message.mediaCaption;
+                _captionLabel.attributedText = [self attributedTextForString:message.mediaCaption outgoing:message.isOutgoing];
             }
             [self loadPhotoForMessage:message client:client];
             break;
@@ -636,7 +827,7 @@ static const CGFloat TGMessageCellForwardLineHeight = 17.0;
             _mediaBadgeLabel.text = @" GIF ";
             if (message.mediaCaption.length > 0) {
                 _captionLabel.hidden = NO;
-                _captionLabel.text = message.mediaCaption;
+                _captionLabel.attributedText = [self attributedTextForString:message.mediaCaption outgoing:message.isOutgoing];
             }
             [self loadAnimationForMessage:message client:client];
             break;
@@ -650,7 +841,7 @@ static const CGFloat TGMessageCellForwardLineHeight = 17.0;
             }
             if (message.mediaCaption.length > 0) {
                 _captionLabel.hidden = NO;
-                _captionLabel.text = message.mediaCaption;
+                _captionLabel.attributedText = [self attributedTextForString:message.mediaCaption outgoing:message.isOutgoing];
             }
             [self loadVideoForMessage:message client:client];
             break;
@@ -686,7 +877,7 @@ static const CGFloat TGMessageCellForwardLineHeight = 17.0;
             _docSubtitleLabel.text = message.mediaFileSize > 0 ? TGDataSizeString(message.mediaFileSize) : @"Plik";
             if (message.mediaCaption.length > 0) {
                 _captionLabel.hidden = NO;
-                _captionLabel.text = message.mediaCaption;
+                _captionLabel.attributedText = [self attributedTextForString:message.mediaCaption outgoing:message.isOutgoing];
             }
             break;
         }
@@ -719,7 +910,7 @@ static const CGFloat TGMessageCellForwardLineHeight = 17.0;
         }
         default: {
             _bodyLabel.hidden = NO;
-            _bodyLabel.text = message.text;
+            _bodyLabel.attributedText = [self attributedTextForString:message.text outgoing:message.isOutgoing];
             break;
         }
     }
@@ -727,7 +918,103 @@ static const CGFloat TGMessageCellForwardLineHeight = 17.0;
     [self setNeedsLayout];
 }
 
+#pragma mark - Album layout
+
+- (NSInteger)albumIndexAtPoint:(CGPoint)point {
+    for (NSInteger i = 0; i < (NSInteger)self.albumImageViews.count; i++) {
+        UIImageView *imageView = self.albumImageViews[(NSUInteger)i];
+        if (!imageView.hidden && CGRectContainsPoint(imageView.frame, point)) {
+            return i;
+        }
+    }
+    if (!self.mediaBadgeLabel.hidden && CGRectContainsPoint(self.mediaBadgeLabel.frame, point)) {
+        return 4;
+    }
+    return -1;
+}
+
+- (void)layoutAlbumGridWithSize:(CGSize)size count:(NSInteger)count {
+    NSInteger visible = MIN(MAX(count, 1), 4);
+    CGFloat gap = 2.0;
+    CGFloat width = size.width;
+    CGFloat height = size.height;
+    CGRect frames[4] = { CGRectZero, CGRectZero, CGRectZero, CGRectZero };
+
+    if (visible == 1) {
+        frames[0] = CGRectMake(0, 0, width, height);
+    } else if (visible == 2) {
+        CGFloat itemWidth = floor((width - gap) / 2.0);
+        frames[0] = CGRectMake(0, 0, itemWidth, height);
+        frames[1] = CGRectMake(itemWidth + gap, 0, width - itemWidth - gap, height);
+    } else if (visible == 3) {
+        CGFloat bigWidth = floor(width * 0.62);
+        CGFloat sideWidth = width - bigWidth - gap;
+        CGFloat sideHeight = floor((height - gap) / 2.0);
+        frames[0] = CGRectMake(0, 0, bigWidth, height);
+        frames[1] = CGRectMake(bigWidth + gap, 0, sideWidth, sideHeight);
+        frames[2] = CGRectMake(bigWidth + gap, sideHeight + gap, sideWidth, height - sideHeight - gap);
+    } else {
+        CGFloat itemWidth = floor((width - gap) / 2.0);
+        CGFloat itemHeight = floor((height - gap) / 2.0);
+        frames[0] = CGRectMake(0, 0, itemWidth, itemHeight);
+        frames[1] = CGRectMake(itemWidth + gap, 0, width - itemWidth - gap, itemHeight);
+        frames[2] = CGRectMake(0, itemHeight + gap, itemWidth, height - itemHeight - gap);
+        frames[3] = CGRectMake(itemWidth + gap, itemHeight + gap, width - itemWidth - gap, height - itemHeight - gap);
+    }
+
+    for (NSInteger i = 0; i < (NSInteger)self.albumImageViews.count; i++) {
+        UIImageView *imageView = self.albumImageViews[(NSUInteger)i];
+        if (i < visible) {
+            imageView.frame = frames[i];
+        }
+    }
+}
+
 #pragma mark - Media Loaders
+
+- (void)loadAlbumImageForMessage:(TGMessage *)message intoImageView:(UIImageView *)imageView {
+    // 1. Local file already produced by a pending/own send.
+    if (message.mediaLocalPath.length > 0 && [[NSFileManager defaultManager] fileExistsAtPath:message.mediaLocalPath]) {
+        UIImage *localImage = [UIImage imageWithContentsOfFile:message.mediaLocalPath];
+        if (localImage != nil) {
+            imageView.image = localImage;
+            return;
+        }
+    }
+
+    // 2. Tiny inline preview so the collage is never blank while loading.
+    if (message.minithumbnailData.length > 0) {
+        imageView.image = [UIImage imageWithData:message.minithumbnailData];
+    }
+
+    int32_t fileId = message.thumbnailFileId > 0 ? message.thumbnailFileId : message.mediaFileId;
+    if (fileId <= 0 || self.client == nil) {
+        return;
+    }
+
+    NSString *path = [self.client localPathForFileId:fileId];
+    if (path.length > 0 && [[NSFileManager defaultManager] fileExistsAtPath:path]) {
+        imageView.image = [UIImage imageWithContentsOfFile:path];
+        return;
+    }
+
+    int64_t albumId = self.message.messageId;
+    __weak typeof(self) weakSelf = self;
+    __weak UIImageView *weakImageView = imageView;
+    [self.client downloadFileWithId:fileId priority:26 completion:^(NSString *downloadedPath, NSDictionary *file) {
+        if (weakSelf.currentMessageId != albumId || downloadedPath.length == 0) {
+            return;
+        }
+        UIImage *image = [UIImage imageWithContentsOfFile:downloadedPath];
+        if (image != nil) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (weakSelf.currentMessageId == albumId) {
+                    weakImageView.image = image;
+                }
+            });
+        }
+    }];
+}
 
 - (void)loadPhotoForMessage:(TGMessage *)message client:(nullable TGTDLibClient *)client {
     // 0. Locally-available file (pending sends keep the input file path)
@@ -1010,8 +1297,12 @@ static const CGFloat TGMessageCellForwardLineHeight = 17.0;
         contentWidth = MAX(mediaSize.width, timeWidth);
 
         self.mediaContainer.frame = CGRectMake(4.0, curY, mediaSize.width, mediaSize.height);
-        self.mediaImageView.frame = self.mediaContainer.bounds;
-        self.playButtonView.center = CGPointMake(mediaSize.width / 2.0, mediaSize.height / 2.0);
+        if (self.message.isAlbum) {
+            [self layoutAlbumGridWithSize:mediaSize count:self.message.albumMessages.count];
+        } else {
+            self.mediaImageView.frame = self.mediaContainer.bounds;
+            self.playButtonView.center = CGPointMake(mediaSize.width / 2.0, mediaSize.height / 2.0);
+        }
 
         if (!self.mediaBadgeLabel.hidden) {
             CGSize badgeSize = [self.mediaBadgeLabel sizeThatFits:CGSizeMake(100, 20)];

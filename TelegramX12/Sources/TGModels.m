@@ -690,6 +690,12 @@ NSString *TGMessagePreviewText(NSDictionary *content) {
     if (dictionary[@"edit_date"] != nil) {
         self.editDate = TGInt32Value(dictionary[@"edit_date"]);
     }
+
+    // Albums are grouped by the top-level media_album_id field.
+    int64_t albumId = TGInt64Value(dictionary[@"media_album_id"]);
+    if (albumId != 0) {
+        self.mediaAlbumId = albumId;
+    }
 }
 
 @end
