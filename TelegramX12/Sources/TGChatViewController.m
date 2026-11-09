@@ -1,6 +1,7 @@
 #import "TGChatViewController.h"
 
 #import "TGAvatarView.h"
+#import "TGChatPickerViewController.h"
 #import "TGInputBar.h"
 #import "TGMessageCell.h"
 #import "TGModels.h"
@@ -28,6 +29,8 @@
 @property (nonatomic, strong) UITableView *tableView;
 @property (nonatomic, strong) TGInputBar *inputBar;
 @property (nonatomic, strong) NSLayoutConstraint *inputBottomConstraint;
+@property (nonatomic, strong) NSLayoutConstraint *inputHeightConstraint;
+@property (nonatomic, strong, nullable) TGMessage *replyTargetMessage;
 @property (nonatomic, strong) NSLayoutConstraint *tableBottomToInputConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *tableBottomToPickerConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *pickerBottomConstraint;
@@ -116,6 +119,9 @@
     self.inputBar.onAttachTap = ^{
         [weakSelf presentAttachmentActionSheet];
     };
+    self.inputBar.onCancelReply = ^{
+        [weakSelf cancelReply];
+    };
     [self.view addSubview:self.inputBar];
 
     self.refreshControl = [[UIRefreshControl alloc] init];
@@ -140,6 +146,7 @@
 
     UILayoutGuide *safe = self.view.safeAreaLayoutGuide;
     self.inputBottomConstraint = [self.inputBar.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor];
+    self.inputHeightConstraint = [self.inputBar.heightAnchor constraintEqualToConstant:50.0];
     self.tableBottomToInputConstraint = [self.tableView.bottomAnchor constraintEqualToAnchor:self.inputBar.topAnchor];
 
     [NSLayoutConstraint activateConstraints:@[
@@ -150,7 +157,7 @@
 
         [self.inputBar.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [self.inputBar.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
-        [self.inputBar.heightAnchor constraintEqualToConstant:50.0],
+        self.inputHeightConstraint,
         self.inputBottomConstraint,
 
         [self.emptyLabel.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
@@ -493,8 +500,12 @@
 
 - (void)sendText:(NSString *)text {
     [self.inputBar clearText];
+    int64_t replyToId = self.replyTargetMessage.messageId;
+    if (replyToId > 0) {
+        [self cancelReply];
+    }
     __weak typeof(self) weakSelf = self;
-    [self.client sendText:text toChat:self.chatId completion:^(NSDictionary *message, NSDictionary *error) {
+    [self.client sendText:text toChat:self.chatId replyToMessageId:replyToId completion:^(NSDictionary *message, NSDictionary *error) {
         dispatch_async(dispatch_get_main_queue(), ^{
             if (message != nil) {
                 [weakSelf upsertMessageDictionary:message scrollToBottom:YES forceScroll:YES];
@@ -514,6 +525,254 @@
             }
         });
     }];
+}
+
+#pragma mark - Message actions (M3)
+
+/// One-line label describing a message inside reply quotes and action sheets.
+- (NSString *)previewTextForMessage:(TGMessage *)message {
+    if (message.text.length > 0) {
+        return message.text;
+    }
+    if (message.mediaCaption.length > 0) {
+        return message.mediaCaption;
+    }
+    switch (message.messageType) {
+        case TGMessageTypePhoto: return @"Zdjęcie";
+        case TGMessageTypeVideo: return @"Wideo";
+        case TGMessageTypeAnimation: return @"GIF";
+        case TGMessageTypeSticker: return message.stickerEmoji.length > 0 ? message.stickerEmoji : @"Sticker";
+        case TGMessageTypeVoiceNote: return @"Wiadomość głosowa";
+        case TGMessageTypeAudio: return message.mediaTitle.length > 0 ? message.mediaTitle : @"Audio";
+        case TGMessageTypeDocument: return message.mediaFileName.length > 0 ? message.mediaFileName : @"Dokument";
+        case TGMessageTypeContact: return message.contactName.length > 0 ? message.contactName : @"Kontakt";
+        case TGMessageTypeLocation: return @"Lokalizacja";
+        case TGMessageTypePoll: return message.pollQuestion.length > 0 ? message.pollQuestion : @"Ankieta";
+        default: return @"Wiadomość";
+    }
+}
+
+- (NSString *)senderNameForMessage:(TGMessage *)message {
+    if (message.isOutgoing) {
+        return @"Ty";
+    }
+    if (message.raw[@"sender_id"] != nil) {
+        NSString *name = [self.client displayNameForSender:message.raw[@"sender_id"]];
+        if (name.length > 0 && ![name isEqualToString:@"…"]) {
+            return name;
+        }
+    }
+    return self.chatTitleForDisplay.length > 0 ? self.chatTitleForDisplay : @"Wiadomość";
+}
+
+/// Fills `replyToSenderName`/`replyToText` on replies from locally loaded
+/// messages, so the quote strip can show the original sender immediately.
+- (void)resolveReplyMetadataForMessage:(TGMessage *)message {
+    if (message.replyToMessageId <= 0) {
+        return;
+    }
+    BOOL needsSenderName = message.replyToSenderName.length == 0 || [message.replyToSenderName isEqualToString:@"…"];
+    if (needsSenderName && message.replyToOrigin != nil) {
+        NSString *originName = [self.client displayNameForMessageOrigin:message.replyToOrigin];
+        if (originName.length > 0) {
+            message.replyToSenderName = originName;
+            needsSenderName = [originName isEqualToString:@"…"];
+        }
+    }
+    if (!needsSenderName && message.replyToText.length > 0) {
+        return;
+    }
+    NSNumber *indexNumber = self.messageIndexById[@(message.replyToMessageId)];
+    if (indexNumber == nil || indexNumber.unsignedIntegerValue >= self.messages.count) {
+        return;
+    }
+    TGMessage *target = self.messages[indexNumber.unsignedIntegerValue];
+    if (message.replyToText.length == 0) {
+        message.replyToText = [self previewTextForMessage:target];
+    }
+    if (needsSenderName) {
+        message.replyToSenderName = [self senderNameForMessage:target];
+    }
+}
+
+- (void)presentMessageActionsForMessage:(TGMessage *)message {
+    if (message.isService || message.isDateDivider || message.isUnreadDivider || message.messageId == 0) {
+        return;
+    }
+
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:nil
+                                                                   message:nil
+                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+    __weak typeof(self) weakSelf = self;
+
+    NSString *copyText = message.text.length > 0 ? message.text : message.mediaCaption;
+    if (copyText.length > 0) {
+        [sheet addAction:[UIAlertAction actionWithTitle:@"Kopiuj" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            [UIPasteboard generalPasteboard].string = copyText;
+        }]];
+    }
+
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Odpowiedz" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [weakSelf beginReplyToMessage:message];
+        });
+    }]];
+
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Przekaż" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [weakSelf presentForwardPickerForMessage:message];
+        });
+    }]];
+
+    if (message.isOutgoing && message.messageType == TGMessageTypeText && !message.isSending && !message.isFailed) {
+        [sheet addAction:[UIAlertAction actionWithTitle:@"Edytuj" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [weakSelf presentEditAlertForMessage:message];
+            });
+        }]];
+    }
+
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Usuń" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [weakSelf confirmDeleteMessage:message];
+        });
+    }]];
+
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Anuluj" style:UIAlertActionStyleCancel handler:nil]];
+
+    if (sheet.popoverPresentationController != nil) {
+        NSNumber *indexNumber = self.messageIndexById[@(message.messageId)];
+        NSIndexPath *indexPath = indexNumber != nil
+            ? [NSIndexPath indexPathForRow:(NSInteger)indexNumber.unsignedIntegerValue inSection:0]
+            : nil;
+        UITableViewCell *cell = indexPath != nil ? [self.tableView cellForRowAtIndexPath:indexPath] : nil;
+        if (cell != nil) {
+            sheet.popoverPresentationController.sourceView = cell;
+            sheet.popoverPresentationController.sourceRect = cell.bounds;
+        } else {
+            sheet.popoverPresentationController.sourceView = self.view;
+            sheet.popoverPresentationController.sourceRect = CGRectMake(CGRectGetMidX(self.view.bounds),
+                                                                        CGRectGetMidY(self.view.bounds),
+                                                                        1.0, 1.0);
+        }
+    }
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)beginReplyToMessage:(TGMessage *)message {
+    self.replyTargetMessage = message;
+    NSString *name = [self senderNameForMessage:message];
+    NSString *preview = [self previewTextForMessage:message];
+    [self.inputBar showReplyToName:name text:preview];
+    [self updateInputBarHeightAnimated:YES];
+    [self.inputBar focus];
+}
+
+- (void)cancelReply {
+    if (self.replyTargetMessage == nil && self.inputBar.preferredHeight <= 50.0) {
+        return;
+    }
+    self.replyTargetMessage = nil;
+    [self.inputBar hideReply];
+    [self updateInputBarHeightAnimated:YES];
+}
+
+- (void)updateInputBarHeightAnimated:(BOOL)animated {
+    CGFloat height = self.inputBar.preferredHeight;
+    if (fabs(self.inputHeightConstraint.constant - height) < 0.5) {
+        return;
+    }
+    self.inputHeightConstraint.constant = height;
+    if (animated) {
+        [UIView animateWithDuration:0.2 animations:^{
+            [self.view layoutIfNeeded];
+        }];
+    } else {
+        [self.view layoutIfNeeded];
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self scrollToBottomAnimated:animated];
+    });
+}
+
+- (void)presentEditAlertForMessage:(TGMessage *)message {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Edytuj wiadomość"
+                                                                   message:nil
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *textField) {
+        textField.text = message.text;
+        textField.clearButtonMode = UITextFieldViewModeWhileEditing;
+    }];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Anuluj" style:UIAlertActionStyleCancel handler:nil]];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:@"Zapisz" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        NSString *newText = [alert.textFields.firstObject.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (newText.length == 0 || [newText isEqualToString:message.text]) {
+            return;
+        }
+        [weakSelf.client editMessageText:newText inChat:weakSelf.chatId messageId:message.messageId completion:^(NSDictionary *edited, NSDictionary *error) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (edited != nil) {
+                    [weakSelf upsertMessageDictionary:edited scrollToBottom:NO forceScroll:NO];
+                } else {
+                    [weakSelf presentSimpleAlertWithTitle:@"Nie udało się edytować"
+                                                   message:TGStringValue(error[@"message"]) ?: @"Spróbuj ponownie."];
+                }
+            });
+        }];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)confirmDeleteMessage:(TGMessage *)message {
+    NSString *title = message.isOutgoing ? @"Usunąć wiadomość u wszystkich?" : @"Usunąć wiadomość?";
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:title
+                                                                   message:nil
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Anuluj" style:UIAlertActionStyleCancel handler:nil]];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:@"Usuń" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+        [weakSelf.client deleteMessages:@[@(message.messageId)]
+                                  inChat:weakSelf.chatId
+                                  revoke:message.isOutgoing
+                              completion:^(NSDictionary *error) {
+            if (error == nil) {
+                return;
+            }
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [weakSelf presentSimpleAlertWithTitle:@"Nie udało się usunąć"
+                                               message:TGStringValue(error[@"message"]) ?: @"Spróbuj ponownie."];
+            });
+        }];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)presentForwardPickerForMessage:(TGMessage *)message {
+    __weak typeof(self) weakSelf = self;
+    TGChatPickerViewController *picker = [[TGChatPickerViewController alloc] initWithClient:self.client
+                                                                           excludingChatId:self.chatId
+                                                                                completion:^(int64_t chatId, NSString *title) {
+        [weakSelf dismissViewControllerAnimated:YES completion:^{
+            [weakSelf.client forwardMessages:@[@(message.messageId)]
+                                    fromChat:weakSelf.chatId
+                                      toChat:chatId
+                                  completion:^(NSArray<NSDictionary *> *messages, NSDictionary *error) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if (error != nil) {
+                        [weakSelf presentSimpleAlertWithTitle:@"Nie udało się przekazać"
+                                                       message:TGStringValue(error[@"message"]) ?: @"Spróbuj ponownie."];
+                        return;
+                    }
+                    NSString *name = title.length > 0 ? title : @"czatu";
+                    [weakSelf presentSimpleAlertWithTitle:@"Przekazano"
+                                                   message:[NSString stringWithFormat:@"Wiadomość trafiła do %@.", name]];
+                });
+            }];
+        }];
+    }];
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:picker];
+    [self presentViewController:nav animated:YES completion:nil];
 }
 
 #pragma mark - Updates
@@ -572,6 +831,28 @@
         raw[@"content"] = update[@"new_content"] ?: @{};
         [message updateWithDictionary:raw];
         [self.tableView reloadData];
+        return;
+    }
+
+    if ([type isEqualToString:@"updateMessageEdited"]) {
+        if (TGInt64Value(update[@"chat_id"]) != self.chatId) {
+            return;
+        }
+        int64_t messageId = TGInt64Value(update[@"message_id"]);
+        NSNumber *indexNumber = self.messageIndexById[@(messageId)];
+        if (indexNumber == nil) {
+            return;
+        }
+        NSUInteger index = indexNumber.unsignedIntegerValue;
+        if (index >= self.messages.count) {
+            return;
+        }
+        TGMessage *message = self.messages[index];
+        NSMutableDictionary *raw = [message.raw mutableCopy] ?: [NSMutableDictionary dictionary];
+        raw[@"edit_date"] = update[@"edit_date"] ?: @0;
+        [message updateWithDictionary:raw];
+        NSIndexPath *indexPath = [NSIndexPath indexPathForRow:(NSInteger)index inSection:0];
+        [self.tableView reloadRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationNone];
         return;
     }
 
@@ -1074,7 +1355,27 @@
     if (!message.isOutgoing && !message.isService) {
         senderName = [self.client displayNameForSender:message.raw[@"sender_id"]];
     }
-    [cell configureWithMessage:message showSender:self.showSenderNames senderName:senderName client:self.client];
+    [self resolveReplyMetadataForMessage:message];
+
+    // A message is the START of a group when it is the first message in a
+    // consecutive run from the same sender (looking backwards through the list).
+    // Service rows and date dividers break the grouping.
+    BOOL isGroupStart = YES;
+    if (indexPath.row > 0) {
+        TGMessage *prev = self.messages[(NSUInteger)(indexPath.row - 1)];
+        if (!prev.isService && !prev.isDateDivider && !prev.isUnreadDivider &&
+            !message.isService && !message.isDateDivider && !message.isUnreadDivider &&
+            prev.senderId == message.senderId &&
+            prev.isOutgoing == message.isOutgoing) {
+            isGroupStart = NO;
+        }
+    }
+
+    [cell configureWithMessage:message
+                    showSender:self.showSenderNames
+                    senderName:senderName
+                  isGroupStart:isGroupStart
+                        client:self.client];
 
     __weak typeof(self) weakSelf = self;
     cell.onMediaTap = ^(TGMessage *msg) {
@@ -1082,6 +1383,9 @@
     };
     cell.onRetryTap = ^(TGMessage *msg) {
         [weakSelf resendFailedMessage:msg];
+    };
+    cell.onLongPress = ^(TGMessage *msg) {
+        [weakSelf presentMessageActionsForMessage:msg];
     };
     return cell;
 }
@@ -1094,19 +1398,44 @@
 
 - (void)handleMediaTapForMessage:(TGMessage *)message {
     if (message.messageType == TGMessageTypePhoto) {
-        int32_t fileId = message.mediaFileId > 0 ? message.mediaFileId : message.thumbnailFileId;
-        NSString *path = [self.client localPathForFileId:fileId];
-        if (path.length > 0 && [[NSFileManager defaultManager] fileExistsAtPath:path]) {
-            TGPhotoViewerController *viewer = [[TGPhotoViewerController alloc] initWithImagePath:path];
-            [self presentViewController:viewer animated:YES completion:nil];
-        } else if (fileId > 0) {
-            __weak typeof(self) weakSelf = self;
-            [self.client downloadFileWithId:fileId priority:32 completion:^(NSString *downloadedPath, NSDictionary *file) {
-                if (downloadedPath.length > 0) {
-                    TGPhotoViewerController *viewer = [[TGPhotoViewerController alloc] initWithImagePath:downloadedPath];
-                    [weakSelf presentViewController:viewer animated:YES completion:nil];
-                }
-            }];
+        // Open the photo viewer immediately with the best locally-available image
+        // (thumbnail or medium-res), then upgrade to full-resolution in the background.
+        UIImage *placeholderImage = nil;
+
+        // Try the bubble preview image (medium res) as the placeholder.
+        int32_t previewId = message.mediaFileId > 0 ? message.mediaFileId : message.thumbnailFileId;
+        NSString *previewPath = previewId > 0 ? [self.client localPathForFileId:previewId] : nil;
+        if (previewPath.length > 0 && [[NSFileManager defaultManager] fileExistsAtPath:previewPath]) {
+            placeholderImage = [UIImage imageWithContentsOfFile:previewPath];
+        } else if (message.mediaLocalPath.length > 0 && [[NSFileManager defaultManager] fileExistsAtPath:message.mediaLocalPath]) {
+            placeholderImage = [UIImage imageWithContentsOfFile:message.mediaLocalPath];
+        } else if (message.minithumbnailData.length > 0) {
+            placeholderImage = [UIImage imageWithData:message.minithumbnailData];
+        }
+
+        // Present the viewer immediately so the user gets instant feedback.
+        TGPhotoViewerController *viewer = [[TGPhotoViewerController alloc] initWithImage:placeholderImage];
+        [self presentViewController:viewer animated:YES completion:nil];
+
+        // Now kick off full-resolution download (or use it straight away if already cached).
+        int32_t fullResId = message.fullResFileId > 0 ? message.fullResFileId : previewId;
+        if (fullResId > 0) {
+            NSString *fullPath = [self.client localPathForFileId:fullResId];
+            if (fullPath.length > 0 && [[NSFileManager defaultManager] fileExistsAtPath:fullPath]) {
+                [viewer upgradeToImage:[UIImage imageWithContentsOfFile:fullPath]];
+            } else {
+                __weak TGPhotoViewerController *weakViewer = viewer;
+                [self.client downloadFileWithId:fullResId priority:32 completion:^(NSString *downloadedPath, NSDictionary *file) {
+                    if (downloadedPath.length > 0) {
+                        UIImage *fullImage = [UIImage imageWithContentsOfFile:downloadedPath];
+                        if (fullImage != nil) {
+                            dispatch_async(dispatch_get_main_queue(), ^{
+                                [weakViewer upgradeToImage:fullImage];
+                            });
+                        }
+                    }
+                }];
+            }
         }
     } else if (message.messageType == TGMessageTypeVideo || message.messageType == TGMessageTypeAnimation) {
         int32_t fileId = message.mediaFileId;

@@ -31,6 +31,23 @@
     return self;
 }
 
+/// Replaces the displayed image with a higher-resolution version (cross-dissolve).
+/// Safe to call after the view has been presented.
+- (void)upgradeToImage:(UIImage *)image {
+    if (image == nil) return;
+    _image = image;
+    if (self.imageView == nil) return; // view not yet loaded
+    [UIView transitionWithView:self.imageView
+                      duration:0.25
+                       options:UIViewAnimationOptionTransitionCrossDissolve
+                    animations:^{
+                        self.imageView.image = image;
+                    }
+                    completion:^(BOOL finished) {
+                        [self layoutImage];
+                    }];
+}
+
 - (BOOL)prefersStatusBarHidden {
     return YES;
 }

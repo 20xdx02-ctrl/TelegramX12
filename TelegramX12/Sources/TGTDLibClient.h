@@ -47,6 +47,28 @@ typedef void (^TGStickerSectionsBlock)(NSArray<NSDictionary *> * _Nullable secti
                      limit:(NSInteger)limit
                 completion:(nullable TGHistoryBlock)completion;
 - (void)sendText:(NSString *)text toChat:(int64_t)chatId completion:(nullable TGMessageBlock)completion;
+/// Sends text; when `replyToMessageId` is non-zero the message quotes it.
+- (void)sendText:(NSString *)text
+          toChat:(int64_t)chatId
+replyToMessageId:(int64_t)replyToMessageId
+      completion:(nullable TGMessageBlock)completion;
+/// Edits a text message that belongs to the current user.
+- (void)editMessageText:(NSString *)text
+                 inChat:(int64_t)chatId
+              messageId:(int64_t)messageId
+             completion:(nullable TGMessageBlock)completion;
+/// Deletes messages; `revoke` also removes them for other participants.
+- (void)deleteMessages:(NSArray<NSNumber *> *)messageIds
+                inChat:(int64_t)chatId
+                revoke:(BOOL)revoke
+            completion:(nullable void (^)(NSDictionary * _Nullable error))completion;
+/// Forwards messages between chats (keeps the "Przekazano od" header).
+- (void)forwardMessages:(NSArray<NSNumber *> *)messageIds
+               fromChat:(int64_t)fromChatId
+                 toChat:(int64_t)toChatId
+             completion:(nullable void (^)(NSArray<NSDictionary *> * _Nullable messages, NSDictionary * _Nullable error))completion;
+/// Human-readable name of a `MessageOrigin` (used by forwarded headers).
+- (NSString *)displayNameForMessageOrigin:(nullable NSDictionary *)origin;
 - (void)sendPhotoAtPath:(NSString *)path
                  toChat:(int64_t)chatId
                 caption:(nullable NSString *)caption

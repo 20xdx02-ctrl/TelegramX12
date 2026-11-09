@@ -533,6 +533,13 @@ static void TGXLogLine(NSString *format, ...) {
 }
 
 - (void)sendText:(NSString *)text toChat:(int64_t)chatId completion:(TGMessageBlock)completion {
+    [self sendText:text toChat:chatId replyToMessageId:0 completion:completion];
+}
+
+- (void)sendText:(NSString *)text
+          toChat:(int64_t)chatId
+replyToMessageId:(int64_t)replyToMessageId
+      completion:(TGMessageBlock)completion {
     NSDictionary *content = @{
         @"@type": @"inputMessageText",
         @"text": @{
@@ -542,15 +549,121 @@ static void TGXLogLine(NSString *format, ...) {
         },
         @"clear_draft": @YES
     };
-    NSDictionary *request = @{
+    NSMutableDictionary *request = [@{
         @"@type": @"sendMessage",
         @"chat_id": @(chatId),
+        @"input_message_content": content
+    } mutableCopy];
+    if (replyToMessageId != 0) {
+        request[@"reply_to"] = @{
+            @"@type": @"inputMessageReplyToMessage",
+            @"message_id": @(replyToMessageId)
+        };
+    }
+    [self sendRequest:request completion:^(NSDictionary *response) {
+        if ([TGStringValue(response[@"@type"]) isEqualToString:@"message"]) {
+            if (completion != nil) {
+                completion(response, nil);
+            }
+            return;
+        }
+        if (completion != nil) {
+            completion(nil, response);
+        }
+    }];
+}
+
+- (void)editMessageText:(NSString *)text
+                 inChat:(int64_t)chatId
+              messageId:(int64_t)messageId
+             completion:(TGMessageBlock)completion {
+    NSDictionary *content = @{
+        @"@type": @"inputMessageText",
+        @"text": @{
+            @"@type": @"formattedText",
+            @"text": text ?: @"",
+            @"entities": @[]
+        },
+        @"clear_draft": @NO
+    };
+    NSDictionary *request = @{
+        @"@type": @"editMessageText",
+        @"chat_id": @(chatId),
+        @"message_id": @(messageId),
         @"input_message_content": content
     };
     [self sendRequest:request completion:^(NSDictionary *response) {
         if ([TGStringValue(response[@"@type"]) isEqualToString:@"message"]) {
             if (completion != nil) {
                 completion(response, nil);
+            }
+            return;
+        }
+        if (completion != nil) {
+            completion(nil, response);
+        }
+    }];
+}
+
+- (void)deleteMessages:(NSArray<NSNumber *> *)messageIds
+                inChat:(int64_t)chatId
+                revoke:(BOOL)revoke
+            completion:(void (^)(NSDictionary *))completion {
+    if (messageIds.count == 0) {
+        if (completion != nil) {
+            completion(nil);
+        }
+        return;
+    }
+    NSDictionary *request = @{
+        @"@type": @"deleteMessages",
+        @"chat_id": @(chatId),
+        @"message_ids": messageIds,
+        @"revoke": @(revoke)
+    };
+    [self sendRequest:request completion:^(NSDictionary *response) {
+        if (completion == nil) {
+            return;
+        }
+        if ([TGStringValue(response[@"@type"]) isEqualToString:@"ok"]) {
+            completion(nil);
+        } else {
+            completion(response);
+        }
+    }];
+}
+
+- (void)forwardMessages:(NSArray<NSNumber *> *)messageIds
+               fromChat:(int64_t)fromChatId
+                 toChat:(int64_t)toChatId
+             completion:(void (^)(NSArray<NSDictionary *> *, NSDictionary *))completion {
+    if (messageIds.count == 0) {
+        if (completion != nil) {
+            completion(nil, @{@"@type": @"error", @"message": @"Brak wiadomości do przekazania."});
+        }
+        return;
+    }
+    NSDictionary *request = @{
+        @"@type": @"forwardMessages",
+        @"chat_id": @(toChatId),
+        @"from_chat_id": @(fromChatId),
+        @"message_ids": messageIds,
+        @"send_copy": @NO,
+        @"remove_caption": @NO
+    };
+    [self sendRequest:request completion:^(NSDictionary *response) {
+        if ([TGStringValue(response[@"@type"]) isEqualToString:@"messages"]) {
+            NSArray *rawMessages = response[@"messages"];
+            NSMutableArray<NSDictionary *> *result = [NSMutableArray array];
+            if ([rawMessages isKindOfClass:[NSArray class]]) {
+                for (id message in rawMessages) {
+                    if ([message isKindOfClass:[NSDictionary class]]) {
+                        [result addObject:(NSDictionary *)message];
+                    }
+                }
+            }
+            if (completion != nil) {
+                completion(result, nil);
             }
             return;
         }
@@ -814,6 +927,40 @@ static int32_t TGStickerFileId(NSDictionary *sticker) {
         return title.length > 0 ? title : @"Czat";
     }
     return @"Nieznany";
+}
+
+/// Resolves a `MessageOrigin` (forward header) to a display name.
+- (NSString *)displayNameForMessageOrigin:(NSDictionary *)origin {
+    if (![origin isKindOfClass:[NSDictionary class]]) {
+        return @"";
+    }
+    NSString *type = TGStringValue(origin[@"@type"]);
+    if ([type isEqualToString:@"messageOriginUser"]) {
+        return [self displayNameForUserId:TGInt64Value(origin[@"sender_user_id"])];
+    }
+    if ([type isEqualToString:@"messageOriginHiddenUser"] ||
+        [type isEqualToString:@"messageOriginMessageImport"]) {
+        return TGStringValue(origin[@"sender_name"]);
+    }
+    if ([type isEqualToString:@"messageOriginChat"]) {
+        int64_t chatId = TGInt64Value(origin[@"sender_chat_id"]);
+        NSDictionary *chat = self.chatCache[@(chatId)];
+        NSString *title = TGStringValue(chat[@"title"]);
+        if (title.length == 0) {
+            [self loadChat:chatId completion:nil];
+        }
+        return title.length > 0 ? title : @"czat";
+    }
+    if ([type isEqualToString:@"messageOriginChannel"]) {
+        int64_t chatId = TGInt64Value(origin[@"chat_id"]);
+        NSDictionary *chat = self.chatCache[@(chatId)];
+        NSString *title = TGStringValue(chat[@"title"]);
+        if (title.length == 0) {
+            [self loadChat:chatId completion:nil];
+        }
+        return title.length > 0 ? title : @"kanał";
+    }
+    return @"";
 }
 
 - (NSString *)displayNameForUserId:(int64_t)userId {

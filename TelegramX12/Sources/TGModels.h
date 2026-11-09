@@ -84,7 +84,24 @@ FOUNDATION_EXPORT NSString *TGDurationString(int32_t seconds);
 @property (nonatomic) BOOL senderIsUser;
 @property (nonatomic, strong) NSDictionary *raw;
 
+// Reply / forward / edit metadata (M3)
+/// Id of the message this one replies to (0 when not a reply).
+@property (nonatomic) int64_t replyToMessageId;
+/// One-line preview of the quoted message, filled from `reply_to.content`.
+@property (nonatomic, copy, nullable) NSString *replyToText;
+/// Sender of the quoted message, resolved lazily by the chat controller.
+@property (nonatomic, copy, nullable) NSString *replyToSenderName;
+/// Raw `reply_to.origin` (MessageOrigin) for the quoted message, when known.
+@property (nonatomic, strong, nullable) NSDictionary *replyToOrigin;
+/// Raw `forward_info` for forwarded messages; nil otherwise.
+@property (nonatomic, strong, nullable) NSDictionary *forwardInfo;
+/// Unix timestamp of the last edit; 0 when the message was never edited.
+@property (nonatomic) int32_t editDate;
+
 // Media attributes
+/// Full-resolution file id for photos (the largest available size).
+/// Used by the photo viewer; the bubble thumbnail uses mediaFileId.
+@property (nonatomic) int32_t fullResFileId;
 @property (nonatomic) int32_t mediaFileId;
 @property (nonatomic) int32_t thumbnailFileId;
 @property (nonatomic, copy, nullable) NSString *mediaLocalPath;

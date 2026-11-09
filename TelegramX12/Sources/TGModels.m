@@ -434,16 +434,25 @@ NSString *TGMessagePreviewText(NSDictionary *content) {
             if ([photo isKindOfClass:[NSDictionary class]]) {
                 NSArray *sizes = photo[@"sizes"];
                 if ([sizes isKindOfClass:[NSArray class]] && sizes.count > 0) {
-                    NSDictionary *bestSize = sizes.lastObject;
+                    // fullResSize = largest size for the photo viewer (type w > y > last).
+                    // bestSize    = medium preview for the bubble thumbnail (type x or y).
+                    NSDictionary *fullResSize = sizes.lastObject;
+                    NSDictionary *bestSize    = sizes.lastObject;
                     for (NSDictionary *size in sizes) {
-                        if ([TGStringValue(size[@"type"]) isEqualToString:@"x"] || [TGStringValue(size[@"type"]) isEqualToString:@"y"]) {
+                        NSString *t = TGStringValue(size[@"type"]);
+                        if ([t isEqualToString:@"w"] || [t isEqualToString:@"y"]) {
+                            fullResSize = size;
+                        }
+                        if ([t isEqualToString:@"x"] || [t isEqualToString:@"y"]) {
                             bestSize = size;
-                            break;
                         }
                     }
+                    // Bubble thumbnail
                     self.mediaFileId = TGInt32Value(bestSize[@"photo"][@"id"]);
-                    self.mediaWidth = TGInt32Value(bestSize[@"width"]);
+                    self.mediaWidth  = TGInt32Value(bestSize[@"width"]);
                     self.mediaHeight = TGInt32Value(bestSize[@"height"]);
+                    // Full-resolution file (opened in the photo viewer)
+                    self.fullResFileId = TGInt32Value(fullResSize[@"photo"][@"id"]);
 
                     NSDictionary *thumbSize = sizes.firstObject;
                     self.thumbnailFileId = TGInt32Value(thumbSize[@"photo"][@"id"]);
@@ -640,6 +649,46 @@ NSString *TGMessagePreviewText(NSDictionary *content) {
             self.senderIsUser = NO;
             self.senderId = TGInt64Value(sender[@"chat_id"]);
         }
+    }
+
+    // Reply-to: keep the quoted message id and, when TDLib already has the
+    // target in memory, a short content preview for the reply strip.
+    NSDictionary *replyTo = dictionary[@"reply_to"];
+    if ([replyTo isKindOfClass:[NSDictionary class]]) {
+        NSString *replyType = TGStringValue(replyTo[@"@type"]);
+        if ([replyType isEqualToString:@"messageReplyToMessage"] ||
+            [replyType isEqualToString:@"messageReplyToExternalMessage"]) {
+            self.replyToMessageId = TGInt64Value(replyTo[@"message_id"]);
+            id replyContent = replyTo[@"content"];
+            if (self.replyToText.length == 0 && [replyContent isKindOfClass:[NSDictionary class]]) {
+                self.replyToText = TGMessagePreviewText((NSDictionary *)replyContent);
+            }
+            NSDictionary *origin = replyTo[@"origin"];
+            if ([origin isKindOfClass:[NSDictionary class]]) {
+                self.replyToOrigin = origin;
+            }
+        } else {
+            self.replyToMessageId = 0;
+            self.replyToText = nil;
+            self.replyToSenderName = nil;
+            self.replyToOrigin = nil;
+        }
+    } else {
+        self.replyToMessageId = 0;
+        self.replyToText = nil;
+        self.replyToSenderName = nil;
+        self.replyToOrigin = nil;
+    }
+
+    NSDictionary *forwardInfo = dictionary[@"forward_info"];
+    if ([forwardInfo isKindOfClass:[NSDictionary class]]) {
+        self.forwardInfo = forwardInfo;
+    } else {
+        self.forwardInfo = nil;
+    }
+
+    if (dictionary[@"edit_date"] != nil) {
+        self.editDate = TGInt32Value(dictionary[@"edit_date"]);
     }
 }
 

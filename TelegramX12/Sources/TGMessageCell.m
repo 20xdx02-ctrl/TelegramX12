@@ -15,6 +15,8 @@ static const CGFloat TGMessageCellMaxBubbleWidth = 420.0; // cap bubbles on wide
 static const CGFloat TGMessageCellAvatarSize = 30.0;
 static const CGFloat TGMessageCellAvatarGap = 8.0;
 static const CGFloat TGMessageCellAvatarSlot = TGMessageCellAvatarSize + TGMessageCellAvatarGap;
+static const CGFloat TGMessageCellReplyBlockHeight = 38.0;
+static const CGFloat TGMessageCellForwardLineHeight = 17.0;
 
 @interface TGMessageCell ()
 
@@ -23,6 +25,13 @@ static const CGFloat TGMessageCellAvatarSlot = TGMessageCellAvatarSize + TGMessa
 @property (nonatomic, strong) UILabel *bodyLabel;
 @property (nonatomic, strong) UILabel *timeLabel;
 @property (nonatomic, strong) UILabel *serviceLabel;
+
+// Reply quote strip and forward header (M3)
+@property (nonatomic, strong) UIView *replyContainer;
+@property (nonatomic, strong) UIView *replyBarView;
+@property (nonatomic, strong) UILabel *replyNameLabel;
+@property (nonatomic, strong) UILabel *replyTextLabel;
+@property (nonatomic, strong) UILabel *forwardLabel;
 
 // Media views
 @property (nonatomic, strong) UIView *mediaContainer;
@@ -55,6 +64,7 @@ static const CGFloat TGMessageCellAvatarSlot = TGMessageCellAvatarSize + TGMessa
 @property (nonatomic, weak) TGTDLibClient *client;
 @property (nonatomic) BOOL showSender;
 @property (nonatomic, copy) NSString *senderName;
+@property (nonatomic) BOOL isGroupStart;
 @property (nonatomic) int64_t currentMessageId;
 
 @end
@@ -103,6 +113,32 @@ static const CGFloat TGMessageCellAvatarSlot = TGMessageCellAvatarSize + TGMessa
         _bodyLabel.numberOfLines = 0;
         _bodyLabel.font = [TGTheme regularFontOfSize:TGMessageCellTextSize];
         [_bubbleView addSubview:_bodyLabel];
+
+        // Reply quote strip: accent bar + sender + one-line preview.
+        _replyContainer = [[UIView alloc] initWithFrame:CGRectZero];
+        _replyContainer.clipsToBounds = YES;
+        _replyContainer.hidden = YES;
+        [_bubbleView addSubview:_replyContainer];
+
+        _replyBarView = [[UIView alloc] initWithFrame:CGRectZero];
+        [self.replyContainer addSubview:_replyBarView];
+
+        _replyNameLabel = [[UILabel alloc] initWithFrame:CGRectZero];
+        _replyNameLabel.font = [TGTheme semiboldFontOfSize:12.0];
+        _replyNameLabel.numberOfLines = 1;
+        [_replyContainer addSubview:_replyNameLabel];
+
+        _replyTextLabel = [[UILabel alloc] initWithFrame:CGRectZero];
+        _replyTextLabel.font = [TGTheme regularFontOfSize:13.0];
+        _replyTextLabel.numberOfLines = 1;
+        [_replyContainer addSubview:_replyTextLabel];
+
+        // Forward header ("Przekazano od …").
+        _forwardLabel = [[UILabel alloc] initWithFrame:CGRectZero];
+        _forwardLabel.font = [TGTheme semiboldFontOfSize:12.0];
+        _forwardLabel.numberOfLines = 1;
+        _forwardLabel.hidden = YES;
+        [_bubbleView addSubview:_forwardLabel];
 
         // Media Container
         _mediaContainer = [[UIView alloc] initWithFrame:CGRectZero];
@@ -239,6 +275,11 @@ static const CGFloat TGMessageCellAvatarSlot = TGMessageCellAvatarSize + TGMessa
         // Cell-level tap: retries failed sends and opens file/audio cards.
         UITapGestureRecognizer *cellTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(handleCellTap)];
         [self.contentView addGestureRecognizer:cellTap];
+
+        // Long press: shows the message action sheet (copy / reply / delete / forward).
+        UILongPressGestureRecognizer *longPress = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(handleLongPress:)];
+        longPress.minimumPressDuration = 0.45;
+        [self.contentView addGestureRecognizer:longPress];
     }
     return self;
 }
@@ -274,6 +315,12 @@ static const CGFloat TGMessageCellAvatarSlot = TGMessageCellAvatarSize + TGMessa
     }
 }
 
+- (void)handleLongPress:(UILongPressGestureRecognizer *)recognizer {
+    if (recognizer.state == UIGestureRecognizerStateBegan && self.onLongPress != nil && self.message != nil) {
+        self.onLongPress(self.message);
+    }
+}
+
 - (void)loadAuthorAvatar {
     if (self.client == nil) {
         return;
@@ -296,6 +343,11 @@ static const CGFloat TGMessageCellAvatarSlot = TGMessageCellAvatarSize + TGMessa
 - (void)prepareForReuse {
     [super prepareForReuse];
     self.currentMessageId = 0;
+    self.replyContainer.hidden = YES;
+    self.replyNameLabel.text = nil;
+    self.replyTextLabel.text = nil;
+    self.forwardLabel.hidden = YES;
+    self.forwardLabel.text = nil;
     self.mediaImageView.image = nil;
     self.stickerImageView.image = nil;
     self.stickerEmojiLabel.hidden = YES;
@@ -378,6 +430,22 @@ static const CGFloat TGMessageCellAvatarSlot = TGMessageCellAvatarSize + TGMessa
     return CGSizeMake(MIN(maxWidth, ceil(CGRectGetWidth(rect))), MAX(1.0, ceil(CGRectGetHeight(rect))));
 }
 
+/// Extra vertical space consumed by the forward header and the reply quote
+/// strip above the message content.
++ (CGFloat)replyBlockHeightForMessage:(TGMessage *)message {
+    if (message.isService || message.messageType == TGMessageTypeSticker) {
+        return 0.0;
+    }
+    CGFloat height = 0.0;
+    if (message.forwardInfo != nil) {
+        height += TGMessageCellForwardLineHeight;
+    }
+    if (message.replyToMessageId > 0) {
+        height += TGMessageCellReplyBlockHeight;
+    }
+    return height;
+}
+
 + (CGFloat)heightForMessage:(TGMessage *)message width:(CGFloat)width showSender:(BOOL)showSender {
     if (message.isUnreadDivider) {
         return 36.0;
@@ -398,7 +466,6 @@ static const CGFloat TGMessageCellAvatarSlot = TGMessageCellAvatarSize + TGMessa
 
     CGFloat senderHeight = (showSender && !message.isOutgoing) ? TGMessageCellSenderHeight : 0.0;
     CGFloat contentHeight = 0.0;
-
     if (message.messageType == TGMessageTypeText || message.messageType == TGMessageTypeUnsupported) {
         NSString *txt = message.text.length > 0 ? message.text : @"Nieobsługiwana wiadomość";
         CGSize sz = [self textSizeForString:txt maxWidth:maxTextWidth];
@@ -413,7 +480,8 @@ static const CGFloat TGMessageCellAvatarSlot = TGMessageCellAvatarSize + TGMessa
         }
     }
 
-    CGFloat bubbleHeight = 6.0 + senderHeight + contentHeight + 2.0 + TGMessageCellTimeHeight + 6.0;
+    CGFloat headerHeight = [self replyBlockHeightForMessage:message];
+    CGFloat bubbleHeight = 6.0 + headerHeight + senderHeight + contentHeight + 2.0 + TGMessageCellTimeHeight + 6.0;
     return bubbleHeight + 6.0;
 }
 
@@ -422,11 +490,13 @@ static const CGFloat TGMessageCellAvatarSlot = TGMessageCellAvatarSize + TGMessa
 - (void)configureWithMessage:(TGMessage *)message
                   showSender:(BOOL)showSender
                   senderName:(NSString *)senderName
+                isGroupStart:(BOOL)isGroupStart
                       client:(nullable TGTDLibClient *)client {
     self.message = message;
     self.client = client;
     self.showSender = showSender;
     self.senderName = senderName;
+    self.isGroupStart = isGroupStart;
     self.currentMessageId = message.messageId;
 
     if (message.isUnreadDivider) {
@@ -437,6 +507,8 @@ static const CGFloat TGMessageCellAvatarSlot = TGMessageCellAvatarSize + TGMessa
         _stickerImageView.hidden = YES;
         _stickerEmojiLabel.hidden = YES;
         _stickerTimePill.hidden = YES;
+        _replyContainer.hidden = YES;
+        _forwardLabel.hidden = YES;
         [self setNeedsLayout];
         return;
     }
@@ -449,6 +521,8 @@ static const CGFloat TGMessageCellAvatarSlot = TGMessageCellAvatarSize + TGMessa
         _stickerImageView.hidden = YES;
         _stickerEmojiLabel.hidden = YES;
         _stickerTimePill.hidden = YES;
+        _replyContainer.hidden = YES;
+        _forwardLabel.hidden = YES;
         _serviceLabel.text = message.text;
         [self setNeedsLayout];
         return;
@@ -462,6 +536,8 @@ static const CGFloat TGMessageCellAvatarSlot = TGMessageCellAvatarSize + TGMessa
         _stickerImageView.hidden = NO;
         _stickerTimePill.hidden = NO;
         _stickerTimeLabel.text = [self timeTextForMessage:message];
+        _replyContainer.hidden = YES;
+        _forwardLabel.hidden = YES;
 
         [self loadStickerForMessage:message client:client];
         [self setNeedsLayout];
@@ -491,8 +567,37 @@ static const CGFloat TGMessageCellAvatarSlot = TGMessageCellAvatarSize + TGMessa
     _senderLabel.hidden = !(showSender && !message.isOutgoing);
     _timeLabel.text = [self timeTextForMessage:message];
 
-    // Author avatar: incoming side only (Telegram shows avatars in groups).
-    BOOL withAvatar = [[self class] showsAuthorAvatarForMessage:message showSender:showSender];
+    // Forward header ("Przekazano od …") and reply quote strip (M3).
+    UIColor *headerColor = message.isOutgoing ? [UIColor colorWithWhite:1.0 alpha:0.92] : [TGTheme accentColor];
+    if (message.forwardInfo != nil) {
+        NSString *originName = [client displayNameForMessageOrigin:message.forwardInfo[@"origin"]];
+        _forwardLabel.text = originName.length > 0
+            ? [NSString stringWithFormat:@"Przekazano od %@", originName]
+            : @"Przekazano wiadomość";
+        _forwardLabel.textColor = headerColor;
+        _forwardLabel.hidden = NO;
+    } else {
+        _forwardLabel.text = nil;
+        _forwardLabel.hidden = YES;
+    }
+
+    if (message.replyToMessageId > 0) {
+        _replyNameLabel.text = message.replyToSenderName.length > 0 ? message.replyToSenderName : @"Wiadomość";
+        _replyNameLabel.textColor = headerColor;
+        _replyTextLabel.text = message.replyToText.length > 0 ? message.replyToText : @"…";
+        _replyTextLabel.textColor = message.isOutgoing ? [UIColor colorWithWhite:1.0 alpha:0.82] : [TGTheme secondaryTextColor];
+        _replyBarView.backgroundColor = message.isOutgoing ? [UIColor colorWithWhite:1.0 alpha:0.75] : [TGTheme accentColor];
+        _replyContainer.hidden = NO;
+    } else {
+        _replyContainer.hidden = YES;
+        _replyNameLabel.text = nil;
+        _replyTextLabel.text = nil;
+    }
+
+    // Author avatar: visible only on the first message of a sender's consecutive
+    // run (isGroupStart). It is pinned to the TOP of the bubble, not the bottom,
+    // mirroring the layout used by Telegram X / modern Telegram clients.
+    BOOL withAvatar = [[self class] showsAuthorAvatarForMessage:message showSender:showSender] && isGroupStart;
     _authorAvatarView.hidden = !withAvatar;
     if (withAvatar) {
         [self loadAuthorAvatar];
@@ -805,6 +910,9 @@ static const CGFloat TGMessageCellAvatarSlot = TGMessageCellAvatarSize + TGMessa
         return @"Nie wysłano  ⚠️";
     }
     NSString *time = [TGTheme timeStringForTimestamp:message.date];
+    if (message.editDate > 0) {
+        time = [time stringByAppendingString:@" · edytowano"];
+    }
     if (message.isSending) {
         return [time stringByAppendingString:@"  ⏳"];
     }
@@ -846,6 +954,9 @@ static const CGFloat TGMessageCellAvatarSlot = TGMessageCellAvatarSize + TGMessa
     CGFloat maxBubbleWidth = [[self class] bubbleWidthForMessage:self.message width:width showSender:self.showSender];
 
     BOOL withAvatar = [[self class] showsAuthorAvatarForMessage:self.message showSender:self.showSender];
+    // The avatar column is always reserved so bubbles stay aligned across a run,
+    // but the image is only rendered for the first message (isGroupStart == YES).
+    BOOL avatarVisible = withAvatar && self.isGroupStart;
     CGFloat leadingMargin = TGMessageCellHorizontalMargin;
     if (withAvatar) {
         leadingMargin += TGMessageCellAvatarSlot;
@@ -869,9 +980,9 @@ static const CGFloat TGMessageCellAvatarSlot = TGMessageCellAvatarSize + TGMessa
                                                 pillSize.height);
         self.stickerTimeLabel.frame = self.stickerTimePill.bounds;
 
-        if (withAvatar) {
+        if (avatarVisible) {
             self.authorAvatarView.frame = CGRectMake(TGMessageCellHorizontalMargin,
-                                                     CGRectGetHeight(self.contentView.bounds) - TGMessageCellAvatarSize - 6.0,
+                                                     stickerY,
                                                      TGMessageCellAvatarSize,
                                                      TGMessageCellAvatarSize);
         }
@@ -883,7 +994,8 @@ static const CGFloat TGMessageCellAvatarSlot = TGMessageCellAvatarSize + TGMessa
     CGFloat senderHeight = (self.showSender && !self.message.isOutgoing) ? TGMessageCellSenderHeight : 0.0;
     CGFloat timeWidth = [self.timeLabel sizeThatFits:CGSizeMake(maxBubbleWidth, TGMessageCellTimeHeight)].width;
 
-    CGFloat curY = 6.0 + senderHeight;
+    CGFloat headerHeight = [[self class] replyBlockHeightForMessage:self.message];
+    CGFloat curY = 6.0 + headerHeight + senderHeight;
     CGFloat contentWidth = 0.0;
 
     if (self.message.messageType == TGMessageTypeText || self.message.messageType == TGMessageTypeUnsupported) {
@@ -939,6 +1051,14 @@ static const CGFloat TGMessageCellAvatarSlot = TGMessageCellAvatarSize + TGMessa
 
     curY += 4.0;
 
+    if (!self.forwardLabel.hidden) {
+        CGSize forwardSize = [self.forwardLabel sizeThatFits:CGSizeMake(maxTextWidth, TGMessageCellForwardLineHeight)];
+        contentWidth = MAX(contentWidth, MIN(maxTextWidth, forwardSize.width + 4.0));
+    }
+    if (!self.replyContainer.hidden) {
+        contentWidth = MAX(contentWidth, MIN(maxTextWidth, 170.0));
+    }
+
     CGFloat bubbleWidth = MIN(maxBubbleWidth, contentWidth + TGMessageCellBubblePadding * 2.0);
     bubbleWidth = MAX(bubbleWidth, 68.0);
     CGFloat bubbleHeight = curY + TGMessageCellTimeHeight + 6.0;
@@ -953,15 +1073,33 @@ static const CGFloat TGMessageCellAvatarSlot = TGMessageCellAvatarSize + TGMessa
 
     self.bubbleView.frame = CGRectMake(bubbleX, bubbleY, bubbleWidth, bubbleHeight);
 
-    if (withAvatar) {
+    if (avatarVisible) {
+        // Pin the avatar to the TOP of the bubble (first message in the group).
         self.authorAvatarView.frame = CGRectMake(TGMessageCellHorizontalMargin,
-                                                 bubbleY + bubbleHeight - TGMessageCellAvatarSize,
+                                                 bubbleY,
                                                  TGMessageCellAvatarSize,
                                                  TGMessageCellAvatarSize);
     }
 
     if (self.showSender && !self.message.isOutgoing) {
-        self.senderLabel.frame = CGRectMake(TGMessageCellBubblePadding, 6.0, bubbleWidth - TGMessageCellBubblePadding * 2.0, TGMessageCellSenderHeight);
+        self.senderLabel.frame = CGRectMake(TGMessageCellBubblePadding, 6.0 + headerHeight, bubbleWidth - TGMessageCellBubblePadding * 2.0, TGMessageCellSenderHeight);
+    }
+
+    // Forward header and reply quote strip, stacked above the message content.
+    CGFloat stripY = 6.0;
+    if (!self.forwardLabel.hidden) {
+        self.forwardLabel.frame = CGRectMake(TGMessageCellBubblePadding, stripY,
+                                             bubbleWidth - TGMessageCellBubblePadding * 2.0,
+                                             TGMessageCellForwardLineHeight);
+        stripY += TGMessageCellForwardLineHeight;
+    }
+    if (!self.replyContainer.hidden) {
+        CGFloat replyX = 8.0;
+        CGFloat replyWidth = bubbleWidth - replyX * 2.0;
+        self.replyContainer.frame = CGRectMake(replyX, stripY, replyWidth, TGMessageCellReplyBlockHeight);
+        self.replyBarView.frame = CGRectMake(0.0, 3.0, 3.0, TGMessageCellReplyBlockHeight - 6.0);
+        self.replyNameLabel.frame = CGRectMake(9.0, 1.0, replyWidth - 13.0, 16.0);
+        self.replyTextLabel.frame = CGRectMake(9.0, 18.0, replyWidth - 13.0, 16.0);
     }
 
     self.timeLabel.frame = CGRectMake(bubbleWidth - TGMessageCellBubblePadding - timeWidth - 2.0,

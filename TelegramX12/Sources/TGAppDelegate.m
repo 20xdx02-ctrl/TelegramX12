@@ -27,9 +27,10 @@
     // iPad rotates between the two-pane split (landscape) and the plain phone
     // layout (portrait); watch the orientation channel for the swap.
     [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(statusBarOrientationWillChange:)
-                                                 name:UIApplicationWillChangeStatusBarOrientationNotification
+                                             selector:@selector(deviceOrientationDidChange:)
+                                                 name:UIDeviceOrientationDidChangeNotification
                                                object:nil];
+    [[UIDevice currentDevice] beginGeneratingDeviceOrientationNotifications];
     // UIKit must finish attaching the initial controller before TDLib can
     // deliver a cached authorization state.  On iOS 12 an already-authorized
     // account can otherwise replace the root controller while launch is still
@@ -80,18 +81,22 @@
     // the left, conversation (or the placeholder) on the right. In portrait
     // the iPad falls back to the plain phone navigation stack instead.
     BOOL isPhone = [[UIDevice currentDevice] userInterfaceIdiom] == UIUserInterfaceIdiomPhone;
-    if (!isPhone) {
-        self.splitViewController = [self buildSplitViewControllerForMaster:self.masterNavigation];
-    }
 
     UIViewController *root = nil;
     if (isPhone) {
         root = self.masterNavigation;
-    } else if ([self iPadOrientationIsPortrait:[UIApplication sharedApplication].statusBarOrientation]) {
-        root = self.masterNavigation;
-        self.splitViewController = nil;
     } else {
-        root = self.splitViewController;
+        // Determine current orientation without relying on deprecated statusBarOrientation.
+        UIInterfaceOrientation orientation = [self currentInterfaceOrientation];
+        if ([self iPadOrientationIsPortrait:orientation]) {
+            // Portrait: single-column phone-style navigation.
+            self.splitViewController = nil;
+            root = self.masterNavigation;
+        } else {
+            // Landscape: two-pane split view.
+            self.splitViewController = [self buildSplitViewControllerForMaster:self.masterNavigation];
+            root = self.splitViewController;
+        }
     }
     [self setRootViewController:root animated:animated];
 }
@@ -111,42 +116,67 @@
     return orientation != UIInterfaceOrientationLandscapeLeft && orientation != UIInterfaceOrientationLandscapeRight;
 }
 
+/// Returns the current interface orientation in a way that works on all iOS versions
+/// without relying on deprecated UIApplication.statusBarOrientation.
+- (UIInterfaceOrientation)currentInterfaceOrientation {
+#if __IPHONE_OS_VERSION_MAX_ALLOWED >= 130000
+    if (@available(iOS 16.0, *)) {
+        // On iOS 16+ query the window scene directly.
+        UIWindowScene *scene = (UIWindowScene *)self.window.windowScene;
+        if (scene != nil) {
+            return (UIInterfaceOrientation)scene.interfaceOrientation;
+        }
+    }
+#endif
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    return [UIApplication sharedApplication].statusBarOrientation;
+#pragma clang diagnostic pop
+}
+
 /// Notification: retry layout only on iPad while chats are visible.
-- (void)statusBarOrientationWillChange:(NSNotification *)notification {
+- (void)deviceOrientationDidChange:(NSNotification *)notification {
     if (!self.readyScreenShown) {
         return;
     }
     if ([[UIDevice currentDevice] userInterfaceIdiom] == UIUserInterfaceIdiomPhone) {
         return;
     }
-    NSNumber *target = notification.userInfo[UIApplicationStatusBarOrientationUserInfoKey];
-    UIInterfaceOrientation orientation = (UIInterfaceOrientation)target.integerValue;
+    UIInterfaceOrientation orientation = [self currentInterfaceOrientation];
+    // Skip unknown / face-up / face-down orientations.
+    if (orientation == UIInterfaceOrientationUnknown) {
+        return;
+    }
     BOOL targetPortrait = [self iPadOrientationIsPortrait:orientation];
     BOOL currentPortrait = (self.window.rootViewController != self.splitViewController);
     if (targetPortrait == currentPortrait) {
         return;
     }
     if (targetPortrait) {
-        [self collapseIpadSplitToPortraitAnimated:NO];
+        [self collapseIpadSplitToPortraitAnimated:YES];
     } else {
-        [self expandIpadToSplitAnimated:NO];
+        [self expandIpadToSplitAnimated:YES];
     }
 }
 
-/// Portrait: every controller already lives in the master phone stack, so the
-/// split view is simply dropped and the master stack becomes the root.
+/// Portrait: move any open chat from the detail column into the master stack,
+/// then drop the split view and promote the master navigation as root.
 - (void)collapseIpadSplitToPortraitAnimated:(BOOL)animated {
     if (self.splitViewController == nil) {
         return;
     }
     TGChatViewController *openChat = [self currentlyOpenChat];
-    if (openChat != nil && self.masterNavigation.viewControllers.lastObject != openChat) {
+    // If the chat is in the detail column (not yet in the master stack), migrate it.
+    if (openChat != nil && ![self.masterNavigation.viewControllers containsObject:openChat]) {
+        // Remove it from the detail navigation controller first.
         UINavigationController *detail = [self.splitViewController viewControllers].lastObject;
         if ([detail isKindOfClass:[UINavigationController class]]) {
-            NSMutableArray *detailControllers = [((UINavigationController *)detail).viewControllers mutableCopy];
-            [detailControllers removeObject:openChat];
-            ((UINavigationController *)detail).viewControllers = detailControllers;
+            UINavigationController *detailNav = (UINavigationController *)detail;
+            NSMutableArray *controllers = [detailNav.viewControllers mutableCopy];
+            [controllers removeObject:openChat];
+            detailNav.viewControllers = controllers;
         }
+        // Push it onto the master stack so it stays accessible in portrait.
         [self.masterNavigation pushViewController:openChat animated:NO];
     }
     self.splitViewController = nil;

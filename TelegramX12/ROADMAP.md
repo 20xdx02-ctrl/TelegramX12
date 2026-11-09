@@ -27,11 +27,11 @@ Priorytety: **P1** = bez tego codzienne używanie boli, **P2** = ważne, **P3** 
 
 ## 2. Interakcja z wiadomościami (P1)
 
-- [ ] **Długie przytrzymanie na wiadomości** → action sheet: kopiuj, odpowiedz, przekaż, usuń (własne: `deleteMessages` z `revoke=true`).
-- [ ] **Odpowiadanie (reply)** — pasek cytatu nad input barem; `sendMessage` z `reply_to = {message_id}`.
-- [ ] **Edycja** — `editMessageText` + znaczek „edytowano”.
-- [ ] **Przekazywanie** — `forwardMessages` + prosty wybierak czatu.
-- [ ] **Kopiowanie tekstu** z bańki.
+- [x] **Długie przytrzymanie na wiadomości** → action sheet: kopiuj, odpowiedz, przekaż, usuń (własne: `deleteMessages` z `revoke=true`).
+- [x] **Odpowiadanie (reply)** — pasek cytatu nad input barem; `sendMessage` z `reply_to = {message_id}`.
+- [x] **Edycja** — `editMessageText` + znaczek „edytowano”.
+- [x] **Przekazywanie** — `forwardMessages` + prosty wybierak czatu.
+- [x] **Kopiowanie tekstu** z bańki.
 - [ ] **Link preview** — `formattedText.entities` / `messageText.web_page`: tytuł, opis, miniatura.
 
 ## 3. Powiadomienia (P1)
