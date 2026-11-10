@@ -350,16 +350,25 @@ NSString *TGMessagePreviewText(NSDictionary *content) {
 
 - (void)applyPositions:(NSArray *)positions {
     BOOL foundMain = NO;
+    BOOL foundArchive = NO;
     for (NSDictionary *position in positions) {
         if (![position isKindOfClass:[NSDictionary class]]) {
             continue;
         }
         NSDictionary *list = position[@"list"];
-        if ([list isKindOfClass:[NSDictionary class]] &&
-            [TGStringValue(list[@"@type"]) isEqualToString:@"chatListMain"]) {
+        NSString *listType = [list isKindOfClass:[NSDictionary class]] ? TGStringValue(list[@"@type"]) : @"";
+        if ([listType isEqualToString:@"chatListMain"]) {
             [self applyPosition:position];
             foundMain = YES;
+        } else if ([listType isEqualToString:@"chatListArchive"]) {
+            foundArchive = YES;
+            self.hasArchivePosition = YES;
+            self.archiveOrder = TGInt64Value(position[@"order"]);
         }
+    }
+    if (!foundArchive) {
+        self.hasArchivePosition = NO;
+        self.archiveOrder = 0;
     }
     if (!foundMain) {
         self.hasMainListPosition = NO;

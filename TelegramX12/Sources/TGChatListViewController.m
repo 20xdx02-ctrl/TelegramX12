@@ -2,6 +2,7 @@
 
 #import "TGChatListCell.h"
 #import "TGChatPlaceholderViewController.h"
+#import "TGArchiveChatListViewController.h"
 #import "TGChatViewController.h"
 #import "TGModels.h"
 #import "TGSettingsViewController.h"
@@ -19,6 +20,9 @@
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, TGChat *> *chats;
 @property (nonatomic, strong) NSArray<TGChat *> *sortedChats;
 @property (nonatomic, strong) NSArray<TGChat *> *filteredChats;
+@property (nonatomic, strong) NSArray<TGChat *> *archivedChats;
+@property (nonatomic, copy) NSString *savedMessagesPreview;
+@property (nonatomic) int32_t savedMessagesDate;
 @property (nonatomic) NSInteger pendingChatLoads;
 @property (nonatomic) BOOL didLoadOnce;
 @end
@@ -103,6 +107,49 @@
     ]];
 
     [self loadChats];
+    [self refreshSavedMessagesInfo];
+}
+
+#pragma mark - Saved Messages info
+
+- (void)refreshSavedMessagesInfo {
+    int64_t myUserId = [self.client myUserId];
+    if (myUserId == 0) {
+        // getMe may still be in flight during startup; retry in a moment.
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if ([self.viewIfLoaded window] != nil) {
+                [self refreshSavedMessagesInfo];
+            }
+        });
+        return;
+    }
+    __weak typeof(self) weakSelf = self;
+    [self.client loadChat:myUserId completion:^(NSDictionary *chat, NSDictionary *error) {
+        if (chat == nil) {
+            return;
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [weakSelf applySavedMessagesChat:chat];
+        });
+    }];
+}
+
+- (void)applySavedMessagesChat:(NSDictionary *)chat {
+    if (self.viewIfLoaded.window == nil) {
+        return;
+    }
+    NSDictionary *lastMessage = chat[@"last_message"];
+    if ([lastMessage isKindOfClass:[NSDictionary class]]) {
+        id content = lastMessage[@"content"];
+        self.savedMessagesPreview = [content isKindOfClass:[NSDictionary class]]
+            ? TGMessagePreviewText(content)
+            : @"Brak wiadomości";
+        self.savedMessagesDate = TGInt32Value(lastMessage[@"date"]);
+    } else {
+        self.savedMessagesPreview = @"Brak wiadomości";
+        self.savedMessagesDate = 0;
+    }
+    [self reloadUI];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -167,6 +214,12 @@
 
 - (void)handleTDLibUpdate:(NSDictionary *)update {
     NSString *type = TGStringValue(update[@"@type"]);
+
+    if ([type isEqualToString:@"updateNewChat"] || [type isEqualToString:@"updateChatLastMessage"]) {
+        if (TGInt64Value(update[@"chat_id"]) == [self.client myUserId]) {
+            [self refreshSavedMessagesInfo];
+        }
+    }
 
     if ([type isEqualToString:@"updateNewChat"]) {
         NSDictionary *dictionary = update[@"chat"];
@@ -276,11 +329,19 @@
 
 - (void)reloadUI {
     NSMutableArray<TGChat *> *visible = [NSMutableArray array];
+    NSMutableArray<TGChat *> *archived = [NSMutableArray array];
     for (TGChat *chat in self.chats.allValues) {
+        if (chat.hasArchivePosition) {
+            [archived addObject:chat];
+        }
         if (chat.hasMainListPosition) {
             [visible addObject:chat];
         }
     }
+    [archived sortUsingComparator:^NSComparisonResult(TGChat *a, TGChat *b) {
+        return a.archiveOrder > b.archiveOrder ? NSOrderedAscending : NSOrderedDescending;
+    }];
+    self.archivedChats = archived;
     [visible sortUsingComparator:^NSComparisonResult(TGChat *a, TGChat *b) {
         if (a.pinned != b.pinned) {
             return a.pinned ? NSOrderedAscending : NSOrderedDescending;
@@ -298,7 +359,7 @@
     }];
     self.sortedChats = visible;
     [self applySearchFilter];
-    self.emptyLabel.hidden = self.filteredChats.count > 0;
+    self.emptyLabel.hidden = self.filteredChats.count > 0 || self.archivedChats.count > 0;
     [self.tableView reloadData];
 }
 
@@ -317,25 +378,80 @@
 - (void)updateSearchResultsForSearchController:(UISearchController *)searchController {
     self.searchQuery = searchController.searchBar.text ?: @"";
     [self applySearchFilter];
-    self.emptyLabel.hidden = self.filteredChats.count > 0;
+    self.emptyLabel.hidden = self.filteredChats.count > 0 || self.archivedChats.count > 0;
     [self.tableView reloadData];
 }
 
 #pragma mark - UITableView
 
+/// Special rows above the chat list: the archive folder and Saved Messages,
+/// mirroring Telegram X's fixed area over the history list.
+- (NSInteger)archiveRowIndex {
+    return self.archivedChats.count > 0 ? 0 : -1;
+}
+
+- (NSInteger)savedRowIndex {
+    return (self.archivedChats.count > 0 ? 1 : 0);
+}
+
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    return (NSInteger)self.filteredChats.count;
+    NSInteger specialRows = [self savedRowIndex] + (self.archivedChats.count > 0 ? 1 : 0);
+    return specialRows + (NSInteger)self.filteredChats.count;
+}
+
+- (TGChat *)fakeChatForArchiveRow {
+    TGChat *chat = [[TGChat alloc] init];
+    chat.chatId = 0;
+    chat.title = @"Archiwum";
+    chat.lastMessageText = [NSString stringWithFormat:@"%lu czatów", (unsigned long)self.archivedChats.count];
+    chat.lastMessageDate = 0;
+    return chat;
+}
+
+- (TGChat *)fakeChatForSavedRow {
+    TGChat *chat = [[TGChat alloc] init];
+    chat.chatId = -1;
+    chat.title = @"Zapisane wiadomości";
+    chat.lastMessageText = self.savedMessagesPreview ?: @"";
+    chat.lastMessageDate = self.savedMessagesDate;
+    NSDictionary *me = [self.client userWithId:[self.client myUserId]];
+    int32_t photoFileId = TGInt32Value(me[@"profile_photo"][@"small"][@"id"]);
+    if (photoFileId > 0) {
+        chat.raw = @{@"photo": @{@"small": @{@"id": @(photoFileId)}}};
+    } else {
+        chat.raw = @{};
+    }
+    return chat;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     TGChatListCell *cell = [tableView dequeueReusableCellWithIdentifier:@"TGChatListCell" forIndexPath:indexPath];
-    [cell configureWithChat:self.filteredChats[(NSUInteger)indexPath.row] client:self.client];
+    if (indexPath.row == [self archiveRowIndex]) {
+        [cell configureWithChat:[self fakeChatForArchiveRow] client:nil];
+        return cell;
+    }
+    if (indexPath.row == [self savedRowIndex]) {
+        [cell configureWithChat:[self fakeChatForSavedRow] client:self.client];
+        return cell;
+    }
+    NSInteger chatIndex = (NSInteger)indexPath.row - [self savedRowIndex] - 1;
+    [cell configureWithChat:self.filteredChats[(NSUInteger)chatIndex] client:self.client];
     return cell;
 }
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
-    TGChat *chat = self.filteredChats[(NSUInteger)indexPath.row];
+    if (indexPath.row == [self archiveRowIndex]) {
+        TGArchiveChatListViewController *archive = [[TGArchiveChatListViewController alloc] initWithClient:self.client];
+        [self.navigationController pushViewController:archive animated:YES];
+        return;
+    }
+    if (indexPath.row == [self savedRowIndex]) {
+        [self openSavedMessages];
+        return;
+    }
+    NSInteger chatIndex = (NSInteger)indexPath.row - [self savedRowIndex] - 1;
+    TGChat *chat = self.filteredChats[(NSUInteger)chatIndex];
     TGChatViewController *controller = [[TGChatViewController alloc] initWithClient:self.client
                                                                             chatId:chat.chatId
                                                                              title:chat.title];
@@ -347,6 +463,38 @@
         return;
     }
     [self.navigationController pushViewController:controller animated:YES];
+}
+
+#pragma mark - Saved Messages
+
+- (void)openSavedMessages {
+    __weak typeof(self) weakSelf = self;
+    [self.client createPrivateChatWithUserId:[self.client myUserId] completion:^(NSDictionary *chat, NSDictionary *error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            int64_t chatId = TGInt64Value(chat[@"id"]);
+            if (chatId == 0) {
+                NSString *messageText = TGStringValue(error[@"message"]);
+                if (messageText.length > 0) {
+                    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Nie udało się otworzyć"
+                                                                                     message:messageText
+                                                                              preferredStyle:UIAlertControllerStyleAlert];
+                    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+                    [weakSelf presentViewController:alert animated:YES completion:nil];
+                }
+                return;
+            }
+            TGChatViewController *controller = [[TGChatViewController alloc] initWithClient:weakSelf.client
+                                                                                     chatId:chatId
+                                                                                      title:@"Zapisane wiadomości"];
+            if (weakSelf.splitViewController != nil) {
+                controller.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
+                UINavigationController *detail = [[UINavigationController alloc] initWithRootViewController:controller];
+                [weakSelf.splitViewController showDetailViewController:detail sender:weakSelf];
+                return;
+            }
+            [weakSelf.navigationController pushViewController:controller animated:YES];
+        });
+    }];
 }
 
 #pragma mark - UISplitViewControllerDelegate

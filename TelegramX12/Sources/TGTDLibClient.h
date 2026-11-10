@@ -95,6 +95,13 @@ replyToMessageId:(int64_t)replyToMessageId
 
 - (nullable NSDictionary *)chatWithId:(int64_t)chatId;
 - (nullable NSDictionary *)userWithId:(int64_t)userId;
+- (void)createPrivateChatWithUserId:(int64_t)userId completion:(void(^)(NSDictionary *chat, NSDictionary *error))completion;
+/// Cache of getMe; 0 until the first authorized account is known.
+- (int64_t)myUserId;
+/// Last known chat objects with a chatListArchive position (snapshot).
+- (NSArray<NSDictionary *> *)cachedArchiveChatDictionaries;
+/// Server-side folder query: getChats(chatListArchive) + getChat for each id.
+- (void)loadArchiveChatListWithCompletion:(void (^)(NSArray<NSDictionary *> *chats, NSDictionary *error))completion;
 - (NSString *)displayNameForSender:(NSDictionary *)sender;
 - (NSString *)displayNameForUserId:(int64_t)userId;
 - (BOOL)chatIsGroup:(int64_t)chatId;

@@ -52,6 +52,9 @@ FOUNDATION_EXPORT NSString *TGDurationString(int32_t seconds);
 @property (nonatomic) int64_t lastReadInboxMessageId;
 @property (nonatomic) int64_t lastReadOutboxMessageId;
 @property (nonatomic) BOOL isMuted;
+/// Chat lives in the archive folder (chatListArchive position).
+@property (nonatomic) BOOL hasArchivePosition;
+@property (nonatomic) int64_t archiveOrder;
 @property (nonatomic, strong) NSDictionary *raw;
 
 + (instancetype)chatWithDictionary:(NSDictionary *)dictionary;

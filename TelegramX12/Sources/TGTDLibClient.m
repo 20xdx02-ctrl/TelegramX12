@@ -44,6 +44,7 @@ static void TGXLogLine(NSString *format, ...) {
 @property (nonatomic, strong) NSMutableDictionary<NSString *, TGResponseBlock> *completions;
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSDictionary *> *chatCache;
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSDictionary *> *userCache;
+@property (nonatomic) int64_t selfUserId;
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSDictionary *> *fileCache;
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSString *> *localPathByFileId;
 @property (nonatomic, strong) NSMutableDictionary<NSNumber *, NSMutableArray *> *fileCompletions;
@@ -900,6 +901,102 @@ static int32_t TGStickerFileId(NSDictionary *sticker) {
 
 - (NSDictionary *)userWithId:(int64_t)userId {
     return self.userCache[@(userId)];
+}
+
+- (void)createPrivateChatWithUserId:(int64_t)userId completion:(void (^)(NSDictionary *, NSDictionary *))completion {
+    NSDictionary *request = @{@"@type": @"createPrivateChat", @"user_id": @(userId), @"force": @NO};
+    __weak typeof(self) weakSelf = self;
+    [self sendRequest:request completion:^(NSDictionary *response) {
+        NSString *type = TGStringValue(response[@"@type"]);
+        if ([type isEqualToString:@"chat"]) {
+            int64_t identifier = TGInt64Value(response[@"id"]);
+            if (identifier != 0) {
+                weakSelf.chatCache[@(identifier)] = response;
+            }
+            if (completion != nil) {
+                completion(response, nil);
+            }
+            return;
+        }
+        if (completion != nil) {
+            completion(nil, [type isEqualToString:@"error"] ? response : @{ @"@type": @"error", @"message": @"Nie udało się otworzyć czatu" });
+        }
+    }];
+}
+
+// Saved Messages is the private chat with our own account; TDLib exposes
+// getMe — cache the result so the chat list can pin the special row.
+- (int64_t)myUserId {
+    if (self.selfUserId == 0) {
+        __weak typeof(self) weakSelf = self;
+        [self sendRequest:@{@"@type": @"getMe"} completion:^(NSDictionary *response) {
+            if ([TGStringValue(response[@"@type"]) isEqualToString:@"user"]) {
+                weakSelf.selfUserId = TGInt64Value(response[@"id"]);
+            }
+        }];
+    }
+    return self.selfUserId;
+}
+
+- (NSArray<NSDictionary *> *)cachedArchiveChatDictionaries {
+    NSMutableArray<NSDictionary *> *result = [NSMutableArray array];
+    for (NSDictionary *chat in self.chatCache.allValues) {
+        if (![chat isKindOfClass:[NSDictionary class]]) {
+            continue;
+        }
+        for (NSDictionary *position in chat[@"positions"] ?: @[]) {
+            NSString *type = TGStringValue(position[@"list"][@"@type"]);
+            if ([type isEqualToString:@"chatListArchive"]) {
+                [result addObject:chat];
+                break;
+            }
+        }
+    }
+    return result;
+}
+
+- (void)loadArchiveChatListWithCompletion:(void (^)(NSArray<NSDictionary *> *, NSDictionary *))completion {
+    NSDictionary *request = @{
+        @"@type": @"getChats",
+        @"chat_list": @{@"@type": @"chatListArchive"},
+        @"limit": @100
+    };
+    __weak typeof(self) weakSelf = self;
+    [self sendRequest:request completion:^(NSDictionary *response) {
+        if ([TGStringValue(response[@"@type"]) isEqualToString:@"error"]) {
+            if (completion != nil) {
+                completion(nil, response);
+            }
+            return;
+        }
+        NSMutableArray<NSDictionary *> *chats = [NSMutableArray array];
+        NSMutableArray<NSString *> *pendingIds = [NSMutableArray array];
+        for (id rawId in response[@"chat_ids"] ?: @[]) {
+            int64_t chatId = TGInt64Value(rawId);
+            if (chatId != 0) {
+                [pendingIds addObject:@(chatId).stringValue];
+            }
+        }
+        if (pendingIds.count == 0) {
+            if (completion != nil) {
+                completion(chats, nil);
+            }
+            return;
+        }
+        __block NSInteger remaining = pendingIds.count;
+        for (NSString *idString in pendingIds) {
+            int64_t chatId = idString.longLongValue;
+            [weakSelf loadChat:chatId completion:^(NSDictionary *chat, NSDictionary *chatError) {
+                if (chat != nil) {
+                    [chats addObject:chat];
+                }
+                remaining -= 1;
+                if (remaining <= 0 && completion != nil) {
+                    completion(chats, nil);
+                }
+            }];
+        }
+    }];
 }
 
 - (BOOL)chatIsGroup:(int64_t)chatId {
