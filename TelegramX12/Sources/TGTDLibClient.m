@@ -1138,4 +1138,33 @@ static int32_t TGStickerFileId(NSDictionary *sticker) {
     return fileId > 0 ? self.fileCache[@(fileId)] : nil;
 }
 
+- (void)toggleReaction:(NSString *)emoji
+             onMessage:(int64_t)messageId
+                inChat:(int64_t)chatId
+            completion:(nullable TGResponseBlock)completion {
+    NSDictionary *reactionType = @{@"@type": @"reactionTypeEmoji", @"emoji": emoji};
+    // TDLib addMessageReaction; if the reaction is already set TDLib auto-removes it.
+    [self sendRequest:@{
+        @"@type": @"addMessageReaction",
+        @"chat_id": @(chatId),
+        @"message_id": @(messageId),
+        @"reaction_type": reactionType,
+        @"is_big": @NO,
+        @"update_recent_reactions": @YES
+    } completion:^(NSDictionary *response) {
+        // On error try removeMessageReaction (toggle)
+        NSString *respType = response[@"@type"];
+        if (respType != nil && [respType isEqualToString:@"error"]) {
+            [self sendRequest:@{
+                @"@type": @"removeMessageReaction",
+                @"chat_id": @(chatId),
+                @"message_id": @(messageId),
+                @"reaction_type": reactionType
+            } completion:completion];
+        } else if (completion != nil) {
+            completion(response);
+        }
+    }];
+}
+
 @end

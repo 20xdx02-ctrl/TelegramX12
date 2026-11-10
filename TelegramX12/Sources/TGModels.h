@@ -129,6 +129,10 @@ FOUNDATION_EXPORT NSString *TGDurationString(int32_t seconds);
 @property (nonatomic, copy, nullable) NSString *pollQuestion;
 @property (nonatomic, strong, nullable) NSArray<NSString *> *pollOptions;
 
+/// Array of NSDictionary: @{ @"emoji": NSString, @"count": NSNumber, @"chosen": NSNumber }
+/// Populated from message.interaction_info.reactions.reactions
+@property (nonatomic, strong, nullable) NSArray<NSDictionary *> *reactions;
+
 + (instancetype)messageWithDictionary:(NSDictionary *)dictionary;
 - (void)updateWithDictionary:(NSDictionary *)dictionary;
 

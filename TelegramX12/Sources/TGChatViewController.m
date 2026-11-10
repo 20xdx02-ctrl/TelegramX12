@@ -51,6 +51,7 @@
 @property (nonatomic, copy) NSString *chatTitleForDisplay;
 @property (nonatomic, strong) AVAudioPlayer *audioPlayer;
 @property (nonatomic, strong) UIDocumentInteractionController *documentController;
+@property (nonatomic, strong) UIButton *scrollToBottomButton;
 @end
 
 @implementation TGChatViewController
@@ -177,6 +178,30 @@
                                              selector:@selector(keyboardWillHide:)
                                                  name:UIKeyboardWillHideNotification
                                                object:nil];
+
+    // Floating scroll-to-bottom button
+    self.scrollToBottomButton = [UIButton buttonWithType:UIButtonTypeCustom];
+    self.scrollToBottomButton.translatesAutoresizingMaskIntoConstraints = NO;
+    self.scrollToBottomButton.backgroundColor = [UIColor whiteColor];
+    self.scrollToBottomButton.layer.cornerRadius = 20.0;
+    self.scrollToBottomButton.layer.shadowColor = [UIColor blackColor].CGColor;
+    self.scrollToBottomButton.layer.shadowOpacity = 0.18;
+    self.scrollToBottomButton.layer.shadowRadius = 4.0;
+    self.scrollToBottomButton.layer.shadowOffset = CGSizeMake(0, 2);
+    self.scrollToBottomButton.clipsToBounds = NO;
+    [self.scrollToBottomButton setTitle:@"↓" forState:UIControlStateNormal];
+    [self.scrollToBottomButton setTitleColor:[TGTheme accentColor] forState:UIControlStateNormal];
+    self.scrollToBottomButton.titleLabel.font = [UIFont systemFontOfSize:20.0 weight:UIFontWeightMedium];
+    self.scrollToBottomButton.alpha = 0.0;
+    [self.scrollToBottomButton addTarget:self action:@selector(scrollToBottomButtonTapped) forControlEvents:UIControlEventTouchUpInside];
+    [self.view addSubview:self.scrollToBottomButton];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [self.scrollToBottomButton.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-16.0],
+        [self.scrollToBottomButton.bottomAnchor constraintEqualToAnchor:self.inputBar.topAnchor constant:-12.0],
+        [self.scrollToBottomButton.widthAnchor constraintEqualToConstant:40.0],
+        [self.scrollToBottomButton.heightAnchor constraintEqualToConstant:40.0],
+    ]];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -615,6 +640,9 @@
     }
     NSIndexPath *indexPath = [NSIndexPath indexPathForRow:(NSInteger)self.messages.count - 1 inSection:0];
     [self.tableView scrollToRowAtIndexPath:indexPath atScrollPosition:UITableViewScrollPositionBottom animated:animated];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self updateScrollToBottomButtonVisibility];
+    });
 }
 
 - (BOOL)isNearBottom {
@@ -766,6 +794,14 @@
             [weakSelf confirmDeleteMessage:message];
         });
     }]];
+
+    // Quick reaction row: 👍 ❤️ 😂 😮 😢 🔥
+    NSArray *quickEmojis = @[@"👍", @"❤️", @"😂", @"😮", @"😢", @"🔥"];
+    for (NSString *emoji in quickEmojis) {
+        [sheet addAction:[UIAlertAction actionWithTitle:emoji style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            [weakSelf handleReactionTap:emoji forMessage:message];
+        }]];
+    }
 
     [sheet addAction:[UIAlertAction actionWithTitle:@"Anuluj" style:UIAlertActionStyleCancel handler:nil]];
 
@@ -1067,6 +1103,24 @@
                 [self.tableView reloadData];
             }
         }
+        return;
+    }
+
+    if ([type isEqualToString:@"updateMessageInteractionInfo"]) {
+        if (TGInt64Value(update[@"chat_id"]) != self.chatId) {
+            return;
+        }
+        int64_t messageId = TGInt64Value(update[@"message_id"]);
+        NSNumber *indexNumber = self.messageIndexById[@(messageId)];
+        if (indexNumber == nil || indexNumber.unsignedIntegerValue >= self.messages.count) {
+            return;
+        }
+        TGMessage *message = self.messages[indexNumber.unsignedIntegerValue];
+        // Re-parse reactions from the update's interaction_info
+        NSMutableDictionary *raw = [message.raw mutableCopy] ?: [NSMutableDictionary dictionary];
+        raw[@"interaction_info"] = update[@"interaction_info"] ?: @{};
+        [message updateWithDictionary:raw];
+        [self.tableView reloadData];
         return;
     }
 }
@@ -1527,6 +1581,9 @@
     cell.onAlbumItemTap = ^(TGMessage *msg, NSInteger index) {
         [weakSelf openAlbumItemInMessage:msg index:index];
     };
+    cell.onReactionTap = ^(TGMessage *msg, NSString *emoji) {
+        [weakSelf handleReactionTap:emoji forMessage:msg];
+    };
     return cell;
 }
 
@@ -1534,6 +1591,7 @@
     if (scrollView.contentOffset.y < 120.0 && !self.loadingOlder && !self.reachedOldestMessage && self.messages.count > 0 && self.didInitialLoad) {
         [self loadOlderHistory];
     }
+    [self updateScrollToBottomButtonVisibility];
 }
 
 - (void)openLink:(NSURL *)url {
@@ -1762,6 +1820,28 @@
     self.inputBottomConstraint.constant = 0.0;
     [self.view layoutIfNeeded];
     [UIView commitAnimations];
+}
+
+- (void)scrollToBottomButtonTapped {
+    [self scrollToBottomAnimated:YES];
+}
+
+- (void)handleReactionTap:(NSString *)emoji forMessage:(TGMessage *)message {
+    [self.client toggleReaction:emoji
+                      onMessage:message.messageId
+                         inChat:self.chatId
+                     completion:nil];
+}
+
+- (void)updateScrollToBottomButtonVisibility {
+    BOOL shouldShow = ![self isNearBottom] && self.messages.count > 0;
+    CGFloat targetAlpha = shouldShow ? 1.0 : 0.0;
+    if (fabs(self.scrollToBottomButton.alpha - targetAlpha) < 0.01) {
+        return;
+    }
+    [UIView animateWithDuration:0.2 animations:^{
+        self.scrollToBottomButton.alpha = targetAlpha;
+    }];
 }
 
 @end

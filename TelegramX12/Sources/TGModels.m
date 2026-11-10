@@ -408,6 +408,38 @@ NSString *TGMessagePreviewText(NSDictionary *content) {
     }
     self.raw = dictionary;
 
+    // Parse reactions from interaction_info
+    NSDictionary *interactionInfo = dictionary[@"interaction_info"];
+    if ([interactionInfo isKindOfClass:[NSDictionary class]]) {
+        NSDictionary *reactionsObj = interactionInfo[@"reactions"];
+        NSArray *reactionsList = nil;
+        if ([reactionsObj isKindOfClass:[NSDictionary class]]) {
+            reactionsList = reactionsObj[@"reactions"];
+        } else if ([reactionsObj isKindOfClass:[NSArray class]]) {
+            reactionsList = (NSArray *)reactionsObj;
+        }
+        if ([reactionsList isKindOfClass:[NSArray class]] && reactionsList.count > 0) {
+            NSMutableArray *parsed = [NSMutableArray array];
+            for (NSDictionary *r in reactionsList) {
+                if (![r isKindOfClass:[NSDictionary class]]) continue;
+                NSDictionary *rType = r[@"type"];
+                NSString *emoji = nil;
+                if ([rType isKindOfClass:[NSDictionary class]]) {
+                    emoji = TGStringValue(rType[@"emoji"]);
+                }
+                if (emoji.length == 0) continue;
+                NSInteger count = TGInt32Value(r[@"total_count"]);
+                BOOL chosen = TGBoolValue(r[@"is_chosen"]);
+                [parsed addObject:@{@"emoji": emoji, @"count": @(count), @"chosen": @(chosen)}];
+            }
+            self.reactions = parsed.count > 0 ? [parsed copy] : nil;
+        } else {
+            self.reactions = nil;
+        }
+    } else {
+        self.reactions = nil;
+    }
+
     int64_t messageId = TGInt64Value(dictionary[@"id"]);
     if (messageId != 0) {
         self.messageId = messageId;

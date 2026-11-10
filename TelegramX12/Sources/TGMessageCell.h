@@ -16,6 +16,8 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, nullable) void (^onLinkTap)(NSURL *url);
 /// Called when the user taps one of the photos in an album collage.
 @property (nonatomic, copy, nullable) void (^onAlbumItemTap)(TGMessage *message, NSInteger index);
+/// Called when user taps a reaction pill.
+@property (nonatomic, copy, nullable) void (^onReactionTap)(TGMessage *message, NSString *emoji);
 
 /// @param isGroupStart  YES for the first message of a consecutive run from the
 ///                      same sender – this is where the avatar is rendered.

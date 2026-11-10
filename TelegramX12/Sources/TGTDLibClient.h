@@ -102,6 +102,13 @@ replyToMessageId:(int64_t)replyToMessageId
 - (void)sendRequest:(NSDictionary *)request;
 - (void)sendRequest:(NSDictionary *)request completion:(nullable TGResponseBlock)completion;
 
+/// Toggles an emoji reaction on a message. If the user already reacted with
+/// this emoji, the reaction is removed; otherwise it is added.
+- (void)toggleReaction:(NSString *)emoji
+             onMessage:(int64_t)messageId
+                inChat:(int64_t)chatId
+            completion:(nullable TGResponseBlock)completion;
+
 @end
 
 NS_ASSUME_NONNULL_END

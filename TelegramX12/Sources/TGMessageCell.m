@@ -74,6 +74,9 @@ static const CGFloat TGMessageCellForwardLineHeight = 17.0;
 @property (nonatomic) BOOL isGroupStart;
 @property (nonatomic) int64_t currentMessageId;
 
+@property (nonatomic, strong) UIView *reactionStripView;
+@property (nonatomic, strong) NSMutableArray<UIButton *> *reactionButtons;
+
 @end
 
 @implementation TGMessageCell
@@ -302,6 +305,12 @@ static const CGFloat TGMessageCellForwardLineHeight = 17.0;
         _authorAvatarView = [[TGAvatarView alloc] initWithFrame:CGRectMake(0, 0, TGMessageCellAvatarSize, TGMessageCellAvatarSize)];
         _authorAvatarView.hidden = YES;
         [self.contentView addSubview:_authorAvatarView];
+
+        // Reaction strip — displayed below the bubble
+        _reactionStripView = [[UIView alloc] initWithFrame:CGRectZero];
+        _reactionStripView.hidden = YES;
+        [self.contentView addSubview:_reactionStripView];
+        _reactionButtons = [NSMutableArray array];
 
         // Cell-level tap: retries failed sends and opens file/audio cards.
         UITapGestureRecognizer *cellTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(handleCellTap)];
@@ -614,7 +623,8 @@ static const CGFloat TGMessageCellForwardLineHeight = 17.0;
 
     CGFloat headerHeight = [self replyBlockHeightForMessage:message];
     CGFloat bubbleHeight = 6.0 + headerHeight + senderHeight + contentHeight + 2.0 + TGMessageCellTimeHeight + 6.0;
-    return bubbleHeight + 6.0;
+    CGFloat reactionHeight = (message.reactions.count > 0) ? 26.0 : 0.0;
+    return bubbleHeight + 6.0 + reactionHeight;
 }
 
 #pragma mark - Configuration
@@ -717,6 +727,7 @@ static const CGFloat TGMessageCellForwardLineHeight = 17.0;
         _forwardLabel.hidden = YES;
 
         [self loadStickerForMessage:message client:client];
+        [self configureReactionStrip];
         [self setNeedsLayout];
         return;
     }
@@ -801,6 +812,7 @@ static const CGFloat TGMessageCellForwardLineHeight = 17.0;
     if (message.isAlbum) {
         _mediaContainer.hidden = NO;
         [self configureAlbumForMessage:message client:client];
+        [self configureReactionStrip];
         [self setNeedsLayout];
         return;
     }
@@ -915,6 +927,7 @@ static const CGFloat TGMessageCellForwardLineHeight = 17.0;
         }
     }
 
+    [self configureReactionStrip];
     [self setNeedsLayout];
 }
 
@@ -1273,6 +1286,21 @@ static const CGFloat TGMessageCellForwardLineHeight = 17.0;
                                                      TGMessageCellAvatarSize,
                                                      TGMessageCellAvatarSize);
         }
+
+        // Reaction strip for stickers
+        if (!self.reactionStripView.hidden && self.reactionButtons.count > 0) {
+            CGFloat stripY = CGRectGetMaxY(self.stickerImageView.frame) + 2.0;
+            CGFloat stripOriginX = self.stickerImageView.frame.origin.x;
+            CGFloat x = 0.0;
+            CGFloat pillH = 22.0;
+            for (UIButton *pill in self.reactionButtons) {
+                CGSize sz = [pill sizeThatFits:CGSizeMake(120.0, pillH)];
+                pill.frame = CGRectMake(x, 0.0, sz.width + 2.0, pillH);
+                x += sz.width + 2.0 + 4.0;
+            }
+            CGFloat stripW = MAX(x - 4.0, 0.0);
+            self.reactionStripView.frame = CGRectMake(stripOriginX, stripY, stripW, pillH);
+        }
         return;
     }
 
@@ -1397,6 +1425,69 @@ static const CGFloat TGMessageCellForwardLineHeight = 17.0;
                                       bubbleHeight - TGMessageCellTimeHeight - 6.0,
                                       timeWidth + 2.0,
                                       TGMessageCellTimeHeight);
+
+    // Reaction strip layout (below bubble)
+    if (!self.reactionStripView.hidden && self.reactionButtons.count > 0) {
+        CGFloat stripY = CGRectGetMaxY(self.bubbleView.frame) + 2.0;
+        CGFloat stripOriginX = self.bubbleView.frame.origin.x;
+
+        CGFloat x = 0.0;
+        CGFloat pillH = 22.0;
+        for (UIButton *pill in self.reactionButtons) {
+            CGSize sz = [pill sizeThatFits:CGSizeMake(120.0, pillH)];
+            pill.frame = CGRectMake(x, 0.0, sz.width + 2.0, pillH);
+            x += sz.width + 2.0 + 4.0;
+        }
+        CGFloat stripW = MAX(x - 4.0, 0.0);
+        self.reactionStripView.frame = CGRectMake(stripOriginX, stripY, stripW, pillH);
+    }
+}
+
+- (void)configureReactionStrip {
+    // Remove old reaction buttons
+    for (UIButton *btn in self.reactionButtons) {
+        [btn removeFromSuperview];
+    }
+    [self.reactionButtons removeAllObjects];
+
+    NSArray *reactions = self.message.reactions;
+    if (reactions.count == 0) {
+        self.reactionStripView.hidden = YES;
+        return;
+    }
+    self.reactionStripView.hidden = NO;
+
+    for (NSDictionary *r in reactions) {
+        NSString *emoji = r[@"emoji"];
+        NSInteger count = [r[@"count"] integerValue];
+        BOOL chosen = [r[@"chosen"] boolValue];
+
+        UIButton *pill = [UIButton buttonWithType:UIButtonTypeCustom];
+        NSString *label = count > 1
+            ? [NSString stringWithFormat:@"%@ %ld", emoji, (long)count]
+            : emoji;
+        [pill setTitle:label forState:UIControlStateNormal];
+        pill.titleLabel.font = [UIFont systemFontOfSize:13.0];
+        [pill setTitleColor:chosen ? [TGTheme accentColor] : [UIColor darkGrayColor] forState:UIControlStateNormal];
+        pill.backgroundColor = chosen
+            ? [[TGTheme accentColor] colorWithAlphaComponent:0.12]
+            : [UIColor colorWithWhite:0.0 alpha:0.06];
+        pill.layer.cornerRadius = 11.0;
+        pill.clipsToBounds = YES;
+        pill.contentEdgeInsets = UIEdgeInsetsMake(2.0, 7.0, 2.0, 7.0);
+        [pill addTarget:self action:@selector(reactionPillTapped:) forControlEvents:UIControlEventTouchUpInside];
+        // Store emoji in accessibilityLabel for retrieval on tap
+        pill.accessibilityLabel = emoji;
+        [self.reactionStripView addSubview:pill];
+        [self.reactionButtons addObject:pill];
+    }
+}
+
+- (void)reactionPillTapped:(UIButton *)sender {
+    NSString *emoji = sender.accessibilityLabel;
+    if (self.onReactionTap && self.message != nil && emoji.length > 0) {
+        self.onReactionTap(self.message, emoji);
+    }
 }
 
 @end
