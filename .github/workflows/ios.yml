@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - telegramx12
-      - master
   workflow_dispatch:
 
 jobs:
