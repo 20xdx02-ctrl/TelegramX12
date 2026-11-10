@@ -107,7 +107,27 @@
     ]];
 
     [self loadChats];
+    [self loadArchiveFolder];
     [self refreshSavedMessagesInfo];
+}
+
+/// The main list never receives archive-only chats from getChats(chatListMain),
+/// so the fixed Archive row stays hidden unless we merge the folder ourselves.
+- (void)loadArchiveFolder {
+    __weak typeof(self) weakSelf = self;
+    [self.client loadArchiveChatListWithCompletion:^(NSArray<NSDictionary *> *chats, NSDictionary *error) {
+        if (error != nil) {
+            return;
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if ([chats isKindOfClass:[NSArray class]]) {
+                for (NSDictionary *dictionary in chats) {
+                    [weakSelf mergeChatDictionary:dictionary];
+                }
+                [weakSelf reloadUI];
+            }
+        });
+    }];
 }
 
 #pragma mark - Saved Messages info

@@ -73,10 +73,7 @@
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.title = self.chatTitleForDisplay;
-    UIColor *wallpaper = [TGTheme chatWallpaperImage] != nil
-        ? [UIColor colorWithPatternImage:[TGTheme chatWallpaperImage]]
-        : [TGTheme chatBackgroundColor];
-    self.view.backgroundColor = wallpaper;
+    self.view.backgroundColor = [TGTheme chatBackgroundColor];
     self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
 
     _titleHeaderView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 212, 44)];
@@ -110,7 +107,6 @@
     self.tableView.separatorStyle = UITableViewCellSeparatorStyleNone;
     self.tableView.estimatedRowHeight = 60.0;
     self.tableView.keyboardDismissMode = UIScrollViewKeyboardDismissModeInteractive;
-    self.tableView.backgroundColor = [UIColor colorWithPatternImage:[TGTheme chatWallpaperImage]];
     [self.tableView registerClass:[TGMessageCell class] forCellReuseIdentifier:@"TGMessageCell"];
     [self.view addSubview:self.tableView];
 

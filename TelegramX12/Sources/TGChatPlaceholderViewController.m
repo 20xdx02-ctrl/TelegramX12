@@ -56,7 +56,7 @@
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.view.backgroundColor = [UIColor colorWithPatternImage:[TGTheme chatWallpaperImage]];
+    self.view.backgroundColor = [TGTheme chatBackgroundColor];
 }
 
 @end

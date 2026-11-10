@@ -27,8 +27,6 @@ NS_ASSUME_NONNULL_BEGIN
 
 + (NSString *)timeStringForTimestamp:(int32_t)timestamp;
 + (NSString *)chatListTimeStringForTimestamp:(int32_t)timestamp;
-/// Telegram-style doodle wallpaper used as the conversation background.
-+ (UIImage *)chatWallpaperImage;
 + (NSString *)chatDayHeadingStringForTimestamp:(int32_t)timestamp;
 + (NSString *)initialsForTitle:(NSString *)title;
 + (UIColor *)avatarColorForIdentifier:(int64_t)identifier;

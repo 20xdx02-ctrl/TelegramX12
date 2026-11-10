@@ -110,51 +110,6 @@
     return [formatter stringFromDate:date];
 }
 
-+ (UIImage *)chatWallpaperImage {
-    static dispatch_once_t onceToken;
-    static UIImage *wallpaper;
-    dispatch_once(&onceToken, ^{
-        // Telegram-style doodle wallpaper: soft blue gradient with a scatter
-        // of monochrome icons, rendered once into a tile and repeated
-        // through UIColor patternImage.
-        CGSize tileSize = CGSizeMake(340.0, 340.0);
-        UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:tileSize];
-        wallpaper = [renderer imageWithActions:^(UIGraphicsImageRendererContext *context) {
-            CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
-            CGColorRef top = [UIColor colorWithRed:0.882 green:0.914 blue:0.949 alpha:1.0].CGColor;
-            CGColorRef bottom = [UIColor colorWithRed:0.827 green:0.866 blue:0.921 alpha:1.0].CGColor;
-            CGGradientRef gradient = CGGradientCreateWithColors(space, (__bridge CFArrayRef)@[(__bridge id)top, (__bridge id)bottom], NULL);
-            CGPoint startPoint = CGPointMake(0.0, 0.0);
-            CGPoint endPoint = CGPointMake(0.0, tileSize.height);
-            CGContextDrawLinearGradient(context.CGContext, gradient, startPoint, endPoint, 0);
-            CGGradientRelease(gradient);
-            CGColorRelease(top);
-            CGColorRelease(bottom);
-            CGColorSpaceRelease(space);
-
-            // Monochrome glyph doodles (dingbats render as plain glyphs).
-            NSArray<NSString *> *glyphs = @[ @"✦", @"✶", @"✷", @"❖", @"✵", @"❋", @"✹", @"✺", @"⚘", @"❀" ];
-            NSArray<NSNumber *> *sizes = @[ @46, @34, @54, @40, @30, @48, @36, @28, @44, @32 ];
-            for (NSUInteger i = 0; i < glyphs.count; i++) {
-                CGFloat x = ((i * 97 + 31) % 300) + 20.0;
-                CGFloat y = ((i * 173 + 57) % 280) + 30.0;
-                CGFloat rotation = ((i * 47 % 6) - 3) * 0.14;
-                CGFloat size = sizes[i].floatValue;
-                [glyphs[i] drawAtPoint:CGPointMake(x, y)
-                        withAttributes:@{NSFontAttributeName: [UIFont systemFontOfSize:size],
-                                         NSForegroundColorAttributeName: [UIColor colorWithWhite:0.38 alpha:0.12]}];
-                // Rotation is approximated by drawing again, slightly offset.
-                if (rotation != 0) {
-                    [glyphs[i] drawAtPoint:CGPointMake(x + rotation * size, y)
-                            withAttributes:@{NSFontAttributeName: [UIFont systemFontOfSize:size * 0.9],
-                                             NSForegroundColorAttributeName: [UIColor colorWithWhite:0.38 alpha:0.07]}];
-                }
-            }
-        }];
-    });
-    return wallpaper;
-}
-
 + (NSString *)chatDayHeadingStringForTimestamp:(int32_t)timestamp {
     if (timestamp <= 0) {
         return @"";
