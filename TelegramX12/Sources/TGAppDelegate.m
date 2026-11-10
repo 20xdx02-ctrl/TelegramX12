@@ -94,22 +94,27 @@
             root = self.masterNavigation;
         } else {
             // Landscape: two-pane split view.
-            self.splitViewController = [self buildSplitViewControllerForMaster:self.masterNavigation];
+            self.splitViewController = [self installSplitForMaster:self.masterNavigation];
             root = self.splitViewController;
         }
     }
     [self setRootViewController:root animated:animated];
 }
 
-/// Builds the two-pane iPad layout with the chat list as the master column.
-- (UISplitViewController *)buildSplitViewControllerForMaster:(UINavigationController *)master {
+/// Builds an empty split view controller (no columns yet — callers must
+/// detach the previous window root before installing a master navigation).
+- (UISplitViewController *)makeSplitViewController {
     UISplitViewController *split = [[UISplitViewController alloc] init];
-    UINavigationController *detail = [[UINavigationController alloc] initWithRootViewController:[[TGChatPlaceholderViewController alloc] init]];
-    split.viewControllers = @[master, detail];
     split.minimumPrimaryColumnWidth = 320.0;
     split.maximumPrimaryColumnWidth = 420.0;
     split.presentsWithGesture = NO;
     return split;
+}
+
+/// Detail column hosting just the empty-state placeholder.
+- (UINavigationController *)makePlaceholderDetailNavigation {
+    UINavigationController *detail = [[UINavigationController alloc] initWithRootViewController:[[TGChatPlaceholderViewController alloc] init]];
+    return detail;
 }
 
 - (BOOL)iPadOrientationIsPortrait:(UIInterfaceOrientation)orientation {
@@ -179,8 +184,31 @@
         // Push it onto the master stack so it stays accessible in portrait.
         [self.masterNavigation pushViewController:openChat animated:NO];
     }
+    // Detach the master column from the split before promoting it to the
+    // window root (same re-parenting constraint as in installSplitForMaster).
+    NSMutableArray *columns = [[self.splitViewController viewControllers] mutableCopy];
+    [columns removeAllObjects];
+    UINavigationController *holdingStack = [[UINavigationController alloc] initWithRootViewController:[[UIViewController alloc] init]];
+    [columns addObject:holdingStack];
+    [self.splitViewController setViewControllers:columns];
+
     self.splitViewController = nil;
     [self setRootViewController:self.masterNavigation animated:animated];
+}
+
+/// Builds the two-pane layout around the chat-list navigation. iOS throws
+/// "adding a root view controller ... as a child" when the window's current
+/// root view controller is re-parented into the split, so detach it first.
+- (UISplitViewController *)installSplitForMaster:(UINavigationController *)master {
+    UISplitViewController *split = [self makeSplitViewController];
+    UINavigationController *detail = [self makePlaceholderDetailNavigation];
+    if (self.window.rootViewController == master) {
+        // Detach cleanly so the master navigation may move under the split.
+        self.window.rootViewController = [[UIViewController alloc] init];
+    }
+    split.viewControllers = @[master, detail];
+    self.splitViewController = split;
+    return split;
 }
 
 /// Landscape: rebuild the two-pane layout, moving any open chat from the
@@ -193,14 +221,16 @@
         openChat = (TGChatViewController *)top;
         [masterControllers removeLastObject];
     }
+    // Detach the chat from the phone stack before it is re-parented into
+    // its own detail column.
     [self.masterNavigation setViewControllers:masterControllers animated:NO];
 
-    self.splitViewController = [self buildSplitViewControllerForMaster:self.masterNavigation];
+    UISplitViewController *split = [self installSplitForMaster:self.masterNavigation];
     if (openChat != nil) {
         UINavigationController *chatStack = [[UINavigationController alloc] initWithRootViewController:openChat];
-        self.splitViewController.viewControllers = @[self.masterNavigation, chatStack];
+        split.viewControllers = @[self.masterNavigation, chatStack];
     }
-    [self setRootViewController:self.splitViewController animated:animated];
+    [self setRootViewController:split animated:animated];
 }
 
 /// Looks up a chat controller that is on screen: top of the detail column
