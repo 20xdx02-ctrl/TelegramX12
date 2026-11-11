@@ -39,8 +39,7 @@ FOUNDATION_EXPORT NSString *TGDurationString(int32_t seconds);
 
 @property (nonatomic) int64_t chatId;
 @property (nonatomic, copy) NSString *title;
-@property (nonatomic, copy) NSString *lastMessageText;
-@property (nonatomic) int32_t lastMessageDate;
+@property (nonatomic, copy) NSString *lastMessageText;@property (nonatomic) int32_t lastMessageDate;
 @property (nonatomic) int64_t lastMessageId;
 @property (nonatomic) BOOL lastMessageIsOutgoing;
 @property (nonatomic) NSInteger unreadCount;
@@ -62,6 +61,9 @@ FOUNDATION_EXPORT NSString *TGDurationString(int32_t seconds);
 - (void)applyPosition:(NSDictionary *)position;
 - (void)applyPositions:(NSArray *)positions;
 - (void)applyLastMessage:(NSDictionary *)message;
+/// Compact TDLib-shaped dictionary with just the fields the list needs,
+/// used to restore the chat list from the local cache before TDLib is ready.
+- (NSDictionary *)cacheDictionary;
 
 @end
 

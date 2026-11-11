@@ -1,5 +1,6 @@
 #import "TGChatListViewController.h"
 
+#import "TGCache.h"
 #import "TGChatListCell.h"
 #import "TGChatPlaceholderViewController.h"
 #import "TGArchiveChatListViewController.h"
@@ -27,6 +28,9 @@
 @property (nonatomic) BOOL didLoadOnce;
 @property (nonatomic) BOOL didStartInitialLoad;
 @property (nonatomic) NSInteger authWaitAttempts;
+/// Set while the list is being filled from the on-disk cache; suppresses a
+/// pointless write-back of the data we just read.
+@property (nonatomic) BOOL restoringCache;
 @end
 
 @implementation TGChatListViewController
@@ -108,7 +112,41 @@
         [self.spinner.centerYAnchor constraintEqualToAnchor:self.tableView.centerYAnchor]
     ]];
 
+    // Show the last known chat list immediately, before TDLib re-authorizes.
+    [self restoreCachedChatList];
+
     [self initialLoadWhenReady];
+}
+
+#pragma mark - Cache
+
+/// Fills the list from the on-disk snapshot so the first frame already shows
+/// chats. Live data merged from TDLib replaces/updates it moments later.
+- (void)restoreCachedChatList {
+    NSArray<NSDictionary *> *cached = [[TGCache sharedCache] cachedChats];
+    if (cached.count == 0) {
+        return;
+    }
+    self.restoringCache = YES;
+    for (NSDictionary *dictionary in cached) {
+        [self mergeChatDictionary:dictionary];
+    }
+    [self reloadUI];
+    self.restoringCache = NO;
+}
+
+- (void)saveChatListCache {
+    if (self.restoringCache || self.chats.count == 0) {
+        return;
+    }
+    NSArray<TGChat *> *chats = self.chats.allValues;
+    NSMutableArray<NSDictionary *> *dictionaries = [NSMutableArray arrayWithCapacity:chats.count];
+    for (TGChat *chat in chats) {
+        if (chat.chatId != 0) {
+            [dictionaries addObject:[chat cacheDictionary]];
+        }
+    }
+    [[TGCache sharedCache] storeChats:dictionaries];
 }
 
 #pragma mark - Startup loading
@@ -426,6 +464,7 @@
     [self applySearchFilter];
     self.emptyLabel.hidden = self.filteredChats.count > 0 || self.archivedChats.count > 0;
     [self.tableView reloadData];
+    [self saveChatListCache];
 }
 
 - (void)applySearchFilter {

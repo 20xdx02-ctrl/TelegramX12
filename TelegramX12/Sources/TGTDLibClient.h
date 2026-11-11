@@ -88,6 +88,10 @@ replyToMessageId:(int64_t)replyToMessageId
 - (void)closeChat:(int64_t)chatId;
 /// Re-sends failed messages (TDLib replaces the old message id on success).
 - (void)resendMessages:(NSArray<NSNumber *> *)messageIds inChat:(int64_t)chatId completion:(void(^)(NSDictionary *error))completion;
+- (void)searchChatMessages:(int64_t)chatId
+                     query:(NSString *)query
+                completion:(void (^)(NSArray<NSDictionary *> *messages, NSDictionary *error))completion;
+- (void)setChatMuted:(int64_t)chatId muted:(BOOL)muted completion:(nullable void (^)(NSDictionary *error))completion;
 - (void)closeChat:(int64_t)chatId;
 
 - (void)downloadFileWithId:(int32_t)fileId

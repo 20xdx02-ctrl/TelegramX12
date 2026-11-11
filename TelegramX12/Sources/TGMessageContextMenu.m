@@ -13,6 +13,7 @@ static const CGFloat TGMenuCardCornerRadius = 14.0;
 @property (nonatomic, strong) NSArray<UIButton *> *emojiButtons;
 @property (nonatomic, copy) void (^onReaction)(NSString *emoji);
 @property (nonatomic, copy) void (^onAction)(TGMessageContextAction action);
+@property (nonatomic, copy) NSDictionary<NSNumber *, NSString *> *titleOverride;
 @property (nonatomic) BOOL dismissing;
 @property (nonatomic) CGRect anchorRect;
 @property (nonatomic, strong) UITapGestureRecognizer *outsideTapRecognizer;
@@ -36,6 +37,7 @@ static const CGFloat TGMenuCardCornerRadius = 14.0;
            bubbleRect:(CGRect)bubbleRect
                emojis:(NSArray<NSString *> *)emojis
        allowedActions:(NSArray<NSNumber *> *)actions
+        titleOverride:(NSDictionary<NSNumber *, NSString *> *)titleOverride
            onReaction:(void (^)(NSString *))onReaction
              onAction:(void (^)(TGMessageContextAction))onAction {
     TGMessageContextMenu *menu = [[TGMessageContextMenu alloc] initWithFrame:superview.bounds];
@@ -43,6 +45,7 @@ static const CGFloat TGMenuCardCornerRadius = 14.0;
     menu.anchorRect = bubbleRect;
     menu.onReaction = onReaction;
     menu.onAction = onAction;
+    menu.titleOverride = titleOverride;
     [menu buildCardWithEmojis:emojis actions:actions];
     [superview addSubview:menu];
     [menu animateIn];
@@ -135,6 +138,8 @@ static const CGFloat TGMenuCardCornerRadius = 14.0;
         @(TGMessageContextActionDelete): @"Usuń",
         @(TGMessageContextActionGallery): @"Zdjęcie z galerii",
         @(TGMessageContextActionCamera): @"Zrób zdjęcie",
+        @(TGMessageContextActionSearch): @"Szukaj wiadomości",
+        @(TGMessageContextActionToggleMute): @"Wycisz powiadomienia",
     };
     for (NSUInteger i = 0; i < actions.count; i++) {
         TGMessageContextAction action = (TGMessageContextAction)actions[i].integerValue;
@@ -146,11 +151,13 @@ static const CGFloat TGMenuCardCornerRadius = 14.0;
         row.contentHorizontalAlignment = UIControlContentHorizontalAlignmentLeft;
         row.contentEdgeInsets = UIEdgeInsetsMake(0.0, 16.0, 0.0, 8.0);
         row.titleLabel.font = [UIFont systemFontOfSize:15.0];
-        [row setTitle:titles[@(action)] forState:UIControlStateNormal];
+        NSString *rowTitle = self.titleOverride[@(action)] ?: titles[@(action)];
+        [row setTitle:rowTitle forState:UIControlStateNormal];
         [row setTitleColor:destructive ? [UIColor colorWithRed:1.0 green:0.45 blue:0.42 alpha:1.0]
                                          : [UIColor colorWithWhite:1.0 alpha:0.96]
                 forState:UIControlStateNormal];
-        row.accessibilityLabel = titles[@(action)];
+        row.accessibilityLabel = rowTitle;
+        row.tag = (NSInteger)action;
         [row addTarget:self action:@selector(actionTapped:) forControlEvents:UIControlEventTouchUpInside];
         [_cardView addSubview:row];
 
@@ -229,21 +236,11 @@ static const CGFloat TGMenuCardCornerRadius = 14.0;
 }
 
 - (void)actionTapped:(UIButton *)sender {
-    NSString *label = sender.accessibilityLabel;
-    NSDictionary<NSString *, NSNumber *> *titles = @{
-        @"Kopiuj": @(TGMessageContextActionCopy),
-        @"Odpowiedz": @(TGMessageContextActionReply),
-        @"Przekaż": @(TGMessageContextActionForward),
-        @"Edytuj": @(TGMessageContextActionEdit),
-        @"Usuń": @(TGMessageContextActionDelete),
-        @"Zdjęcie z galerii": @(TGMessageContextActionGallery),
-        @"Zrób zdjęcie": @(TGMessageContextActionCamera),
-    };
-    NSNumber *actionNumber = titles[label];
+    TGMessageContextAction action = (TGMessageContextAction)sender.tag;
     void (^onAction)(TGMessageContextAction) = self.onAction;
     [self dismissAnimated:YES completion:nil];
-    if (onAction != nil && actionNumber != nil) {
-        onAction((TGMessageContextAction)actionNumber.integerValue);
+    if (onAction != nil) {
+        onAction(action);
     }
 }
 

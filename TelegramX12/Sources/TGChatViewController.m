@@ -1,6 +1,7 @@
 #import "TGChatViewController.h"
 
 #import "TGAvatarView.h"
+#import "TGCache.h"
 #import "TGChatPickerViewController.h"
 #import "TGInputBar.h"
 #import "TGMessageCell.h"
@@ -13,7 +14,7 @@
 #import <AVFoundation/AVFoundation.h>
 #import <AVKit/AVKit.h>
 
-@interface TGChatViewController () <UITableViewDataSource, UITableViewDelegate, UIImagePickerControllerDelegate, UINavigationControllerDelegate, UIDocumentInteractionControllerDelegate>
+@interface TGChatViewController () <UITableViewDataSource, UITableViewDelegate, UISearchBarDelegate, UIImagePickerControllerDelegate, UINavigationControllerDelegate, UIDocumentInteractionControllerDelegate>
 @property (nonatomic, strong) TGTDLibClient *client;
 @property (nonatomic) int64_t chatId;
 @property (nonatomic) int64_t lastReadOutboxMessageId;
@@ -37,6 +38,13 @@
 @property (nonatomic, strong) NSLayoutConstraint *pickerBottomConstraint;
 @property (nonatomic, strong) TGStickerPickerView *stickerPickerView;
 @property (nonatomic) BOOL stickerPickerVisible;
+// In-chat search overlay + chat menu (three-dots).
+@property (nonatomic, strong) UIView *searchHeaderView;
+@property (nonatomic, strong) UISearchBar *searchBar;
+@property (nonatomic, strong) UITableView *searchResultsTableView;
+@property (nonatomic, strong) NSArray<TGMessage *> *searchResults;
+@property (nonatomic) BOOL chatMenuVisible;
+@property (nonatomic, copy) id searchDebounceToken;
 @property (nonatomic, strong) UIRefreshControl *refreshControl;
 @property (nonatomic, strong) UILabel *emptyLabel;
 @property (nonatomic, strong) UIActivityIndicatorView *spinner;
@@ -47,6 +55,8 @@
 @property (nonatomic) BOOL reachedOldestMessage;
 @property (nonatomic) NSInteger initialRetryCount;
 @property (nonatomic) BOOL didInitialLoad;
+/// True while cached messages are being restored (skips cache write-back).
+@property (nonatomic) BOOL restoringCache;
 @property (nonatomic) BOOL visible;
 @property (nonatomic) BOOL showSenderNames;
 @property (nonatomic, copy) NSString *chatTitleForDisplay;
@@ -76,6 +86,14 @@
     self.title = self.chatTitleForDisplay;
     self.view.backgroundColor = [TGTheme chatBackgroundColor];
     self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
+    // Chat menu (three dots, top right): search, mute, ... in Telegram style.
+    UIBarButtonItem *menuButton = [[UIBarButtonItem alloc] initWithTitle:@"⋮"
+                                                                  style:UIBarButtonItemStylePlain
+                                                                 target:self
+                                                                 action:@selector(presentChatMenu)];
+    [menuButton setTitleTextAttributes:@{NSFontAttributeName: [UIFont boldSystemFontOfSize:20.0]}
+                              forState:UIControlStateNormal];
+    self.navigationItem.rightBarButtonItem = menuButton;
 
     _titleHeaderView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 212, 44)];
 
@@ -228,6 +246,8 @@
     }
 
     [self.client openChat:self.chatId];
+    [[TGCache sharedCache] markChatOpened:self.chatId];
+    [self restoreCachedMessages];
     if (!self.didInitialLoad) {
         [self loadInitialHistory];
     } else {
@@ -270,7 +290,10 @@
 #pragma mark - History
 
 - (void)loadInitialHistory {
-    [self.spinner startAnimating];
+    // Cached messages are already on screen; don't dim them with a spinner.
+    if (self.messages.count == 0) {
+        [self.spinner startAnimating];
+    }
     self.emptyLabel.hidden = YES;
     NSDictionary *chat = [self.client chatWithId:self.chatId];
     if (chat != nil) {
@@ -558,6 +581,51 @@
     [self recomputeDateDividers];
     // Keep the id → row map in sync; targeted row updates below rely on it.
     [self rebuildMessageIndex];
+    [self saveMessageCache];
+}
+
+#pragma mark - Cache
+
+/// Paints the last cached messages of this chat before TDLib delivers
+/// history, so reopening a recent chat feels instant even offline.
+- (void)restoreCachedMessages {
+    if (self.messages.count > 0) {
+        return;
+    }
+    NSArray<NSDictionary *> *cached = [[TGCache sharedCache] cachedMessagesForChat:self.chatId];
+    if (cached.count == 0) {
+        return;
+    }
+    self.restoringCache = YES;
+    [self replaceMessagesWithDictionaries:cached totalCount:(NSInteger)cached.count];
+    self.restoringCache = NO;
+    [self updateSenderVisibility];
+    [self.tableView reloadData];
+    [self.tableView layoutIfNeeded];
+    [self scrollToBottomAnimated:NO];
+    self.emptyLabel.hidden = YES;
+}
+
+/// Stores the tail of the conversation (raw TDLib dictionaries) for the next
+/// cold start. Synthetic rows (dividers, service messages) are skipped.
+- (void)saveMessageCache {
+    if (self.restoringCache || self.chatId == 0 || self.messages.count == 0) {
+        return;
+    }
+    NSMutableArray<NSDictionary *> *dictionaries = [NSMutableArray array];
+    for (TGMessage *message in self.messages) {
+        if (message.isDateDivider || message.isUnreadDivider || message.isService) {
+            continue;
+        }
+        NSDictionary *raw = message.raw;
+        if ([raw isKindOfClass:[NSDictionary class]]) {
+            [dictionaries addObject:raw];
+        }
+    }
+    if (dictionaries.count > 24) {
+        [dictionaries removeObjectsInRange:NSMakeRange(0, dictionaries.count - 24)];
+    }
+    [[TGCache sharedCache] storeMessages:dictionaries forChat:self.chatId];
 }
 
 - (NSArray<NSNumber *> *)messageIdsForMessage:(TGMessage *)message {
@@ -808,6 +876,7 @@
                              bubbleRect:bubbleRect
                                  emojis:@[ @"\U0001F44D", @"\u2764\uFE0F", @"\U0001F602", @"\U0001F62E", @"\U0001F622", @"\U0001F525" ]
                          allowedActions:actions
+                          titleOverride:nil
                              onReaction:^(NSString *emoji) {
                                  [weakSelf handleReactionTap:emoji forMessage:message];
                              }
@@ -1323,6 +1392,7 @@
                              bubbleRect:anchorRect
                                  emojis:@[]
                          allowedActions:actions
+                          titleOverride:nil
                              onReaction:nil
                                onAction:^(TGMessageContextAction action) {
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -1574,6 +1644,174 @@
     }
 }
 
+#pragma mark - Chat menu
+
+- (BOOL)chatIsMuted {
+    NSDictionary *chat = [self.client chatWithId:self.chatId];
+    return TGInt32Value(chat[@"notification_settings"][@"mute_for"]) > 0;
+}
+
+/// Three-dots chat menu: search, notification toggle — the dark card style
+/// shared with the message context menu, anchored to the top-right corner.
+- (void)presentChatMenu {
+    if (self.chatMenuVisible) {
+        return;
+    }
+    self.chatMenuVisible = YES;
+    BOOL muted = [self chatIsMuted];
+    CGRect anchorRect = CGRectMake(CGRectGetWidth(self.view.bounds) - 60.0, 0.0, 52.0, 44.0);
+    __weak typeof(self) weakSelf = self;
+    [TGMessageContextMenu presentInView:self.view
+                             bubbleRect:anchorRect
+                                 emojis:@[]
+                         allowedActions:@[ @(TGMessageContextActionSearch), @(TGMessageContextActionToggleMute) ]
+                          titleOverride:@{ @(TGMessageContextActionToggleMute): muted ? @"Włącz powiadomienia" : @"Wycisz powiadomienia" }
+                             onReaction:nil
+                               onAction:^(TGMessageContextAction action) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            weakSelf.chatMenuVisible = NO;
+            switch (action) {
+                case TGMessageContextActionSearch: {
+                    [weakSelf showSearchOverlay];
+                    break;
+                }
+                case TGMessageContextActionToggleMute: {
+                    [weakSelf.client setChatMuted:weakSelf.chatId muted:!muted completion:nil];
+                    break;
+                }
+                default:
+                    break;
+            }
+        });
+    }];
+}
+
+#pragma mark - In-chat search
+
+- (void)showSearchOverlay {
+    if (self.searchHeaderView == nil) {
+        UIView *header = [[UIView alloc] initWithFrame:CGRectZero];
+        header.translatesAutoresizingMaskIntoConstraints = NO;
+        header.backgroundColor = [TGTheme chatBackgroundColor];
+        [self.view addSubview:header];
+
+        UISearchBar *searchBar = [[UISearchBar alloc] initWithFrame:CGRectZero];
+        searchBar.translatesAutoresizingMaskIntoConstraints = NO;
+        searchBar.placeholder = @"Szukaj w czacie";
+        searchBar.searchBarStyle = UISearchBarStyleMinimal;
+        searchBar.delegate = self;
+        searchBar.autocorrectionType = UITextAutocorrectionTypeDefault;
+        [header addSubview:searchBar];
+
+        UIButton *cancel = [UIButton buttonWithType:UIButtonTypeSystem];
+        cancel.translatesAutoresizingMaskIntoConstraints = NO;
+        [cancel setTitle:@"Anuluj" forState:UIControlStateNormal];
+        cancel.titleLabel.font = [TGTheme regularFontOfSize:15.0];
+        [cancel setTitleColor:[TGTheme accentColor] forState:UIControlStateNormal];
+        [cancel addTarget:self action:@selector(hideSearchOverlay) forControlEvents:UIControlEventTouchUpInside];
+        [header addSubview:cancel];
+
+        UITableView *results = [[UITableView alloc] initWithFrame:CGRectZero style:UITableViewStylePlain];
+        results.translatesAutoresizingMaskIntoConstraints = NO;
+        results.backgroundColor = [TGTheme chatBackgroundColor];
+        results.separatorStyle = UITableViewCellSeparatorStyleSingleLine;
+        results.hidden = YES;
+        results.dataSource = self;
+        results.delegate = self;
+        [self.view addSubview:results];
+
+        UILayoutGuide *safe = self.view.safeAreaLayoutGuide;
+        [NSLayoutConstraint activateConstraints:@[
+            [header.topAnchor constraintEqualToAnchor:safe.topAnchor],
+            [header.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+            [header.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+            [header.bottomAnchor constraintEqualToAnchor:safe.topAnchor],
+
+            [searchBar.topAnchor constraintEqualToAnchor:header.topAnchor],
+            [searchBar.leadingAnchor constraintEqualToAnchor:header.leadingAnchor],
+            [searchBar.trailingAnchor constraintEqualToAnchor:cancel.leadingAnchor],
+            [searchBar.bottomAnchor constraintEqualToAnchor:header.bottomAnchor],
+
+            [cancel.trailingAnchor constraintEqualToAnchor:header.trailingAnchor constant:-10.0],
+            [cancel.centerYAnchor constraintEqualToAnchor:searchBar.centerYAnchor],
+            [cancel.widthAnchor constraintGreaterThanOrEqualToConstant:56.0],
+
+            [results.topAnchor constraintEqualToAnchor:header.bottomAnchor],
+            [results.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+            [results.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+            [results.bottomAnchor constraintEqualToAnchor:self.inputBar.topAnchor]
+        ]];
+        self.searchHeaderView = header;
+        self.searchBar = searchBar;
+        self.searchResultsTableView = results;
+        self.searchResults = @[];
+    }
+    self.searchHeaderView.hidden = NO;
+    self.searchResultsTableView.hidden = NO;
+    [self.searchBar becomeFirstResponder];
+}
+
+- (void)hideSearchOverlay {
+    [self.searchBar resignFirstResponder];
+    self.searchHeaderView.hidden = YES;
+    self.searchResultsTableView.hidden = YES;
+    self.searchResults = @[];
+    [self.searchResultsTableView reloadData];
+    [self.searchBar setText:@""];
+}
+
+- (void)runSearchWithQuery:(NSString *)query {
+    NSString *trimmed = [query stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (trimmed.length == 0) {
+        self.searchResults = @[];
+        [self.searchResultsTableView reloadData];
+        return;
+    }
+    __weak typeof(self) weakSelf = self;
+    [self.client searchChatMessages:self.chatId
+                              query:trimmed
+                         completion:^(NSArray<NSDictionary *> *messages, NSDictionary *error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (messages == nil) {
+                return;
+            }
+            NSMutableArray<TGMessage *> *results = [NSMutableArray array];
+            for (NSDictionary *dictionary in messages) {
+                TGMessage *message = [TGMessage messageWithDictionary:dictionary];
+                if (message.messageId != 0) {
+                    [results addObject:message];
+                }
+            }
+            weakSelf.searchResults = results;
+            [weakSelf.searchResultsTableView reloadData];
+        });
+    }];
+}
+
+/// Opens the chat history around the picked search result (older pages from
+/// the server, with the found message at the bottom, ready to be read).
+- (void)jumpToSearchResult:(TGMessage *)message {
+    [self hideSearchOverlay];
+    __weak typeof(self) weakSelf = self;
+    [self.client loadHistoryForChat:self.chatId fromMessageId:message.messageId limit:50 completion:^(NSArray<NSDictionary *> *olderMessages, NSInteger totalCount, NSDictionary *error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            NSMutableArray<NSDictionary *> *dictionaries = [NSMutableArray array];
+            for (NSDictionary *dictionary in olderMessages ?: @[]) {
+                if ([dictionary isKindOfClass:[NSDictionary class]] && TGInt64Value(dictionary[@"id"]) < message.messageId) {
+                    [dictionaries addObject:dictionary];
+                }
+            }
+            [dictionaries addObject:message.raw];
+            [weakSelf replaceMessagesWithDictionaries:dictionaries totalCount:MAX(totalCount, (NSInteger)dictionaries.count)];
+            [weakSelf rebuildMessageLayout];
+            [weakSelf.tableView reloadData];
+            [weakSelf.tableView layoutIfNeeded];
+            [weakSelf scrollToBottomAnimated:NO];
+            [weakSelf updateEmptyState];
+        });
+    }];
+}
+
 - (void)updateEmptyState {
     self.emptyLabel.hidden = self.messages.count > 0 || self.spinner.isAnimating;
 }
@@ -1622,10 +1860,34 @@
 #pragma mark - UITableView
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    if (tableView == self.searchResultsTableView) {
+        return (NSInteger)self.searchResults.count;
+    }
     return (NSInteger)self.messages.count;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (tableView == self.searchResultsTableView) {
+        static NSString *resultIdentifier = @"TGSearchResultCell";
+        UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:resultIdentifier];
+        if (cell == nil) {
+            cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:resultIdentifier];
+            cell.textLabel.font = [TGTheme regularFontOfSize:15.0];
+            cell.textLabel.numberOfLines = 2;
+            cell.detailTextLabel.font = [TGTheme regularFontOfSize:12.0];
+            cell.detailTextLabel.textColor = [TGTheme secondaryTextColor];
+            cell.backgroundColor = [TGTheme chatBackgroundColor];
+        }
+        TGMessage *message = self.searchResults[(NSUInteger)indexPath.row];
+        NSString *senderName = [self.client displayNameForSender:message.raw[@"sender_id"]];
+        NSString *preview = message.text.length > 0 ? message.text
+            : (message.mediaCaption.length > 0 ? message.mediaCaption : TGMessagePreviewText(message.raw[@"content"]));
+        cell.textLabel.text = senderName.length > 0
+            ? [NSString stringWithFormat:@"%@: %@", senderName, preview ?: @""]
+            : (preview ?: @"");
+        cell.detailTextLabel.text = [TGTheme chatDayHeadingStringForTimestamp:message.date];
+        return cell;
+    }
     TGMessageCell *cell = [tableView dequeueReusableCellWithIdentifier:@"TGMessageCell" forIndexPath:indexPath];
     TGMessage *message = self.messages[(NSUInteger)indexPath.row];
     NSString *senderName = @"";
@@ -1865,8 +2127,54 @@
 }
 
 - (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (tableView == self.searchResultsTableView) {
+        return 54.0;
+    }
     TGMessage *message = self.messages[(NSUInteger)indexPath.row];
     return [TGMessageCell heightForMessage:message width:CGRectGetWidth(tableView.bounds) showSender:self.showSenderNames];
+}
+
+#pragma mark - Search results
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    if (tableView == self.searchResultsTableView) {
+        if (indexPath.row < (NSInteger)self.searchResults.count) {
+            [self jumpToSearchResult:self.searchResults[(NSUInteger)indexPath.row]];
+        }
+        return;
+    }
+    // Main conversation list selection does nothing on its own.
+}
+
+#pragma mark - UISearchBarDelegate
+
+- (void)searchBar:(UISearchBar *)searchBar textDidChange:(NSString *)searchText {
+    // Debounce: search once the user pauses typing for 0.4s.
+    dispatch_block_t previousToken = self.searchDebounceToken;
+    if (previousToken != nil) {
+        dispatch_block_cancel(previousToken);
+    }
+    NSString *query = [searchText copy];
+    __weak typeof(self) weakSelf = self;
+    dispatch_block_t token = dispatch_block_create(0, ^{
+        [weakSelf runSearchWithQuery:query];
+    });
+    self.searchDebounceToken = token;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), token);
+}
+
+- (void)searchBarSearchButtonClicked:(UISearchBar *)searchBar {
+    dispatch_block_t previousToken = self.searchDebounceToken;
+    if (previousToken != nil) {
+        dispatch_block_cancel(previousToken);
+        self.searchDebounceToken = nil;
+    }
+    [self runSearchWithQuery:searchBar.text ?: @""];
+}
+
+- (void)searchBarCancelButtonClicked:(UISearchBar *)searchBar {
+    [self hideSearchOverlay];
 }
 
 #pragma mark - Keyboard

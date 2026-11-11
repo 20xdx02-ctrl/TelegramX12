@@ -399,6 +399,63 @@ NSString *TGMessagePreviewText(NSDictionary *content) {
     self.lastMessageText = [content isKindOfClass:[NSDictionary class]] ? TGMessagePreviewText(content) : @"";
 }
 
+- (NSDictionary *)cacheDictionary {
+    NSMutableArray *positions = [NSMutableArray array];
+    if (self.hasMainListPosition) {
+        NSMutableDictionary *main = [NSMutableDictionary dictionary];
+        main[@"@type"] = @"chatPosition";
+        main[@"list"] = @{ @"@type": @"chatListMain" };
+        main[@"order"] = @(self.order);
+        main[@"is_pinned"] = @(self.pinned);
+        [positions addObject:main];
+    }
+    if (self.hasArchivePosition) {
+        NSMutableDictionary *archive = [NSMutableDictionary dictionary];
+        archive[@"@type"] = @"chatPosition";
+        archive[@"list"] = @{ @"@type": @"chatListArchive" };
+        archive[@"order"] = @(self.archiveOrder);
+        archive[@"is_pinned"] = @NO;
+        [positions addObject:archive];
+    }
+
+    NSDictionary *chatType = nil;
+    if (self.isChannel) {
+        chatType = @{ @"@type": @"chatTypeSupergroup", @"is_channel": @YES };
+    } else if (self.isGroup) {
+        chatType = @{ @"@type": @"chatTypeSupergroup", @"is_channel": @NO };
+    } else {
+        chatType = @{ @"@type": @"chatTypePrivate" };
+    }
+
+    NSMutableDictionary *dictionary = [NSMutableDictionary dictionary];
+    dictionary[@"@type"] = @"chat";
+    dictionary[@"id"] = @(self.chatId);
+    dictionary[@"title"] = self.title ?: @"";
+    dictionary[@"unread_count"] = @((int32_t)self.unreadCount);
+    dictionary[@"last_read_inbox_message_id"] = @(self.lastReadInboxMessageId);
+    dictionary[@"last_read_outbox_message_id"] = @(self.lastReadOutboxMessageId);
+    dictionary[@"notification_settings"] = @{
+        @"@type": @"chatNotificationSettings",
+        @"use_default_mute_for": @(!self.isMuted),
+        @"mute_for": @(self.isMuted ? 31536000 : 0)
+    };
+    dictionary[@"type"] = chatType;
+    dictionary[@"positions"] = positions;
+
+    if (self.lastMessageId != 0) {
+        dictionary[@"last_message"] = @{
+            @"id": @(self.lastMessageId),
+            @"date": @(self.lastMessageDate),
+            @"is_outgoing": @(self.lastMessageIsOutgoing),
+            @"content": @{
+                @"@type": @"messageText",
+                @"text": @{ @"text": self.lastMessageText ?: @"" }
+            }
+        };
+    }
+    return dictionary;
+}
+
 @end
 
 @implementation TGMessage

@@ -10,6 +10,8 @@ typedef NS_ENUM(NSInteger, TGMessageContextAction) {
     TGMessageContextActionDelete,
     TGMessageContextActionGallery,
     TGMessageContextActionCamera,
+    TGMessageContextActionSearch,
+    TGMessageContextActionToggleMute,
 };
 
 /// Telegram X-style message context menu: a dark floating card with a row of
@@ -22,6 +24,7 @@ typedef NS_ENUM(NSInteger, TGMessageContextAction) {
            bubbleRect:(CGRect)bubbleRect
                emojis:(NSArray<NSString *> *)emojis
        allowedActions:(NSArray<NSNumber *> *)actions
+          titleOverride:(nullable NSDictionary<NSNumber *, NSString *> *)titleOverride
            onReaction:(nullable void (^)(NSString *emoji))onReaction
              onAction:(nullable void (^)(TGMessageContextAction action))onAction;
 

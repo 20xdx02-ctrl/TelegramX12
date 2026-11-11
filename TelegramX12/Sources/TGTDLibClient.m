@@ -879,6 +879,79 @@ static int32_t TGStickerFileId(NSDictionary *sticker) {
     [self sendRequest:@{@"@type": @"closeChat", @"chat_id": @(chatId)}];
 }
 
+- (void)updateChatCache:(NSNumber *)chatId key:(NSString *)key value:(id)value {
+    NSDictionary *cached = self.chatCache[chatId];
+    if (cached == nil || key.length == 0) {
+        return;
+    }
+    NSMutableDictionary *updated = [cached mutableCopy];
+    updated[key] = value ?: @{};
+    self.chatCache[chatId] = updated;
+}
+
+- (void)searchChatMessages:(int64_t)chatId
+                     query:(NSString *)query
+                completion:(void (^)(NSArray<NSDictionary *> *, NSDictionary *))completion {
+    if (query.length == 0) {
+        if (completion != nil) {
+            completion(@[], nil);
+        }
+        return;
+    }
+    NSDictionary *request = @{
+        @"@type": @"searchChatMessages",
+        @"chat_id": @(chatId),
+        @"query": query,
+        @"limit": @25
+    };
+    [self sendRequest:request completion:^(NSDictionary *response) {
+        if ([TGStringValue(response[@"@type"]) isEqualToString:@"error"]) {
+            if (completion != nil) {
+                completion(nil, response);
+            }
+            return;
+        }
+        NSArray *messages = response[@"messages"];
+        if (completion != nil) {
+            completion([messages isKindOfClass:[NSArray class]] ? messages : @[], nil);
+        }
+    }];
+}
+
+- (void)setChatMuted:(int64_t)chatId muted:(BOOL)muted completion:(void (^)(NSDictionary *))completion {
+    // Mute for a year; unmute falls back to the account defaults.
+    NSDictionary *settings = muted
+        ? @{@"@type": @"chatNotificationSettings",
+            @"use_default_mute_for": @NO,
+            @"mute_for": @31536000,
+            @"use_default_disable_sound": @YES,
+            @"use_default_show_preview": @YES,
+            @"use_default_mute_stories": @YES,
+            @"use_default_disable_sound_stories": @YES,
+            @"use_default_hide_sender_name_stories": @YES,
+            @"use_default_story_reaction_notifications": @YES}
+        : @{@"@type": @"chatNotificationSettings",
+            @"use_default_mute_for": @YES};
+    NSDictionary *request = @{
+        @"@type": @"setChatNotificationSettings",
+        @"chat_id": @(chatId),
+        @"notification_settings": settings
+    };
+    __weak typeof(self) weakSelf = self;
+    [self sendRequest:request completion:^(NSDictionary *response) {
+        if ([TGStringValue(response[@"@type"]) isEqualToString:@"error"]) {
+            if (completion != nil) {
+                completion(response);
+            }
+            return;
+        }
+        [weakSelf updateChatCache:@(chatId) key:@"notification_settings" value:settings];
+        if (completion != nil) {
+            completion(nil);
+        }
+    }];
+}
+
 - (void)resendMessages:(NSArray<NSNumber *> *)messageIds
                 inChat:(int64_t)chatId
             completion:(void (^)(NSDictionary *))completion {
