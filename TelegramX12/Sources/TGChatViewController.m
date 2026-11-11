@@ -4,6 +4,7 @@
 #import "TGChatPickerViewController.h"
 #import "TGInputBar.h"
 #import "TGMessageCell.h"
+#import "TGMessageContextMenu.h"
 #import "TGModels.h"
 #import "TGPhotoViewerController.h"
 #import "TGStickerPickerView.h"
@@ -778,71 +779,61 @@
         return;
     }
 
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:nil
-                                                                   message:nil
-                                                            preferredStyle:UIAlertControllerStyleActionSheet];
-    __weak typeof(self) weakSelf = self;
+    NSNumber *indexNumber = self.messageIndexById[@(message.messageId)];
+    NSIndexPath *indexPath = indexNumber != nil
+        ? [NSIndexPath indexPathForRow:(NSInteger)indexNumber.unsignedIntegerValue inSection:0]
+        : nil;
+    UITableViewCell *cell = indexPath != nil ? [self.tableView cellForRowAtIndexPath:indexPath] : nil;
+    CGRect bubbleRect = cell != nil
+        ? [cell convertRect:cell.bounds toView:self.view]
+        : CGRectMake(CGRectGetMidX(self.view.bounds) - 60.0, CGRectGetMidY(self.view.bounds) - 30.0, 120.0, 60.0);
 
+    NSMutableArray<NSNumber *> *actions = [NSMutableArray array];
     NSString *copyText = message.text.length > 0 ? message.text : message.mediaCaption;
     if (copyText.length > 0) {
-        [sheet addAction:[UIAlertAction actionWithTitle:@"Kopiuj" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-            [UIPasteboard generalPasteboard].string = copyText;
-        }]];
+        [actions addObject:@(TGMessageContextActionCopy)];
     }
-
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Odpowiedz" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [weakSelf beginReplyToMessage:message];
-        });
-    }]];
-
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Przekaż" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [weakSelf presentForwardPickerForMessage:message];
-        });
-    }]];
-
+    [actions addObject:@(TGMessageContextActionReply)];
+    [actions addObject:@(TGMessageContextActionForward)];
     if (message.isOutgoing && message.messageType == TGMessageTypeText && !message.isSending && !message.isFailed) {
-        [sheet addAction:[UIAlertAction actionWithTitle:@"Edytuj" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [weakSelf presentEditAlertForMessage:message];
-            });
-        }]];
+        [actions addObject:@(TGMessageContextActionEdit)];
     }
+    [actions addObject:@(TGMessageContextActionDelete)];
 
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Usuń" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+    __weak typeof(self) weakSelf = self;
+    [TGMessageContextMenu presentInView:self.view
+                             bubbleRect:bubbleRect
+                                 emojis:@[ @"\U0001F44D", @"\u2764\uFE0F", @"\U0001F602", @"\U0001F62E", @"\U0001F622", @"\U0001F525" ]
+                         allowedActions:actions
+                             onReaction:^(NSString *emoji) {
+                                 [weakSelf handleReactionTap:emoji forMessage:message];
+                             }
+                               onAction:^(TGMessageContextAction action) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            [weakSelf confirmDeleteMessage:message];
+            switch (action) {
+                case TGMessageContextActionCopy: {
+                    [UIPasteboard generalPasteboard].string = copyText;
+                    break;
+                }
+                case TGMessageContextActionReply: {
+                    [weakSelf beginReplyToMessage:message];
+                    break;
+                }
+                case TGMessageContextActionForward: {
+                    [weakSelf presentForwardPickerForMessage:message];
+                    break;
+                }
+                case TGMessageContextActionEdit: {
+                    [weakSelf presentEditAlertForMessage:message];
+                    break;
+                }
+                case TGMessageContextActionDelete: {
+                    [weakSelf confirmDeleteMessage:message];
+                    break;
+                }
+            }
         });
-    }]];
-
-    // Quick reaction row: 👍 ❤️ 😂 😮 😢 🔥
-    NSArray *quickEmojis = @[@"👍", @"❤️", @"😂", @"😮", @"😢", @"🔥"];
-    for (NSString *emoji in quickEmojis) {
-        [sheet addAction:[UIAlertAction actionWithTitle:emoji style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-            [weakSelf handleReactionTap:emoji forMessage:message];
-        }]];
-    }
-
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Anuluj" style:UIAlertActionStyleCancel handler:nil]];
-
-    if (sheet.popoverPresentationController != nil) {
-        NSNumber *indexNumber = self.messageIndexById[@(message.messageId)];
-        NSIndexPath *indexPath = indexNumber != nil
-            ? [NSIndexPath indexPathForRow:(NSInteger)indexNumber.unsignedIntegerValue inSection:0]
-            : nil;
-        UITableViewCell *cell = indexPath != nil ? [self.tableView cellForRowAtIndexPath:indexPath] : nil;
-        if (cell != nil) {
-            sheet.popoverPresentationController.sourceView = cell;
-            sheet.popoverPresentationController.sourceRect = cell.bounds;
-        } else {
-            sheet.popoverPresentationController.sourceView = self.view;
-            sheet.popoverPresentationController.sourceRect = CGRectMake(CGRectGetMidX(self.view.bounds),
-                                                                        CGRectGetMidY(self.view.bounds),
-                                                                        1.0, 1.0);
-        }
-    }
-    [self presentViewController:sheet animated:YES completion:nil];
+    }];
 }
 
 - (void)beginReplyToMessage:(TGMessage *)message {

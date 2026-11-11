@@ -1476,14 +1476,25 @@ static const CGFloat TGMessageCellForwardLineHeight = 17.0;
             ? [NSString stringWithFormat:@"%@ %ld", emoji, (long)count]
             : emoji;
         [pill setTitle:label forState:UIControlStateNormal];
-        pill.titleLabel.font = [UIFont systemFontOfSize:13.0];
-        [pill setTitleColor:chosen ? [TGTheme accentColor] : [UIColor darkGrayColor] forState:UIControlStateNormal];
-        pill.backgroundColor = chosen
-            ? [[TGTheme accentColor] colorWithAlphaComponent:0.12]
-            : [UIColor colorWithWhite:0.0 alpha:0.06];
-        pill.layer.cornerRadius = 11.0;
+        pill.titleLabel.font = [UIFont systemFontOfSize:14.0];
+        if (chosen) {
+            // Selected reactions read like Telegram X's filled accent pills.
+            [pill setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+            pill.backgroundColor = [TGTheme accentColor];
+            pill.layer.borderWidth = 0.0;
+        } else {
+            [pill setTitleColor:[UIColor colorWithWhite:0.25 alpha:1.0] forState:UIControlStateNormal];
+            pill.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.92];
+            pill.layer.borderColor = [UIColor colorWithWhite:0.0 alpha:0.10].CGColor;
+            pill.layer.borderWidth = 0.5;
+        }
+        pill.layer.cornerRadius = 13.0;
         pill.clipsToBounds = YES;
-        pill.contentEdgeInsets = UIEdgeInsetsMake(2.0, 7.0, 2.0, 7.0);
+        pill.contentEdgeInsets = UIEdgeInsetsMake(3.0, 9.0, 3.0, 9.0);
+        pill.layer.shadowColor = [UIColor blackColor].CGColor;
+        pill.layer.shadowOpacity = 0.10;
+        pill.layer.shadowRadius = 4.0;
+        pill.layer.shadowOffset = CGSizeMake(0.0, 1.0);
         [pill addTarget:self action:@selector(reactionPillTapped:) forControlEvents:UIControlEventTouchUpInside];
         // Store emoji in accessibilityLabel for retrieval on tap
         pill.accessibilityLabel = emoji;
