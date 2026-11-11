@@ -1659,7 +1659,13 @@
     }
     self.chatMenuVisible = YES;
     BOOL muted = [self chatIsMuted];
-    CGRect anchorRect = CGRectMake(CGRectGetWidth(self.view.bounds) - 60.0, 0.0, 52.0, 44.0);
+    // Anchor at the ⋮ button in the navigation bar; the card drops just below
+    // it instead of spawning under the bar.
+    CGFloat safeTop = self.view.safeAreaInsets.top;
+    CGRect anchorRect = CGRectMake(CGRectGetWidth(self.view.bounds) - 60.0,
+                                   MAX(0.0, safeTop - 44.0),
+                                   52.0,
+                                   44.0);
     __weak typeof(self) weakSelf = self;
     [TGMessageContextMenu presentInView:self.view
                              bubbleRect:anchorRect
@@ -1725,7 +1731,7 @@
             [header.topAnchor constraintEqualToAnchor:safe.topAnchor],
             [header.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
             [header.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
-            [header.bottomAnchor constraintEqualToAnchor:safe.topAnchor],
+            [header.heightAnchor constraintEqualToConstant:56.0],
 
             [searchBar.topAnchor constraintEqualToAnchor:header.topAnchor],
             [searchBar.leadingAnchor constraintEqualToAnchor:header.leadingAnchor],

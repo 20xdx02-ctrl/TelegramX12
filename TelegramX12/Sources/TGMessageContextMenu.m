@@ -48,10 +48,35 @@ static const CGFloat TGMenuCardCornerRadius = 14.0;
     menu.titleOverride = titleOverride;
     [menu buildCardWithEmojis:emojis actions:actions];
     [superview addSubview:menu];
+    // The overlay covers the whole screen, including the navigation bar, so
+    // keep the card clear of the safe-area top/bottom once insets are known.
+    [menu clampCardToSafeArea];
     [menu animateIn];
 }
 
 #pragma mark - Construction
+
+/// Keeps the floating card inside the visible area (below the navigation bar
+/// and above the home indicator) after the overlay joins the view hierarchy.
+- (void)clampCardToSafeArea {
+    if (_cardView == nil) {
+        return;
+    }
+    UIEdgeInsets insets = UIEdgeInsetsZero;
+    if (@available(iOS 11.0, *)) {
+        insets = self.safeAreaInsets;
+    }
+    CGFloat topLimit = MAX(12.0, insets.top + 8.0);
+    CGFloat bottomLimit = CGRectGetHeight(self.bounds) - MAX(12.0, insets.bottom + 8.0);
+    CGRect frame = _cardView.frame;
+    if (CGRectGetMaxY(frame) > bottomLimit) {
+        frame.origin.y = bottomLimit - CGRectGetHeight(frame);
+    }
+    if (frame.origin.y < topLimit) {
+        frame.origin.y = topLimit;
+    }
+    _cardView.frame = frame;
+}
 
 - (void)buildCardWithEmojis:(NSArray<NSString *> *)emojis actions:(NSArray<NSNumber *> *)actions {
     self.backgroundColor = [UIColor clearColor];
