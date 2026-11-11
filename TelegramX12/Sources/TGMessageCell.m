@@ -747,6 +747,15 @@ static const CGFloat TGMessageCellForwardLineHeight = 17.0;
             _bubbleView.layer.maskedCorners = kCALayerMinXMinYCorner | kCALayerMaxXMinYCorner | kCALayerMaxXMaxYCorner;
         }
     }
+    // Incoming bubbles get a hairline frame so the white fill stays visible
+    // against the gray conversation background; outgoing bubbles stay flat.
+    if (message.isOutgoing) {
+        _bubbleView.layer.borderWidth = 0.0;
+        _bubbleView.layer.borderColor = nil;
+    } else {
+        _bubbleView.layer.borderWidth = 0.5;
+        _bubbleView.layer.borderColor = [UIColor colorWithWhite:0.55 alpha:0.30].CGColor;
+    }
     _bodyLabel.textColor = message.isOutgoing ? [UIColor whiteColor] : [UIColor blackColor];
     _captionLabel.textColor = message.isOutgoing ? [UIColor whiteColor] : [UIColor blackColor];
     _timeLabel.textColor = message.isOutgoing ? [UIColor colorWithWhite:1.0 alpha:0.75] : [TGTheme secondaryTextColor];

@@ -401,7 +401,20 @@
             NSIndexSet *indexes = [NSIndexSet indexSetWithIndexesInRange:NSMakeRange(0, newMessages.count)];
             [weakSelf.messages insertObjects:newMessages atIndexes:indexes];
             [weakSelf rebuildMessageLayout];
-            [weakSelf.tableView reloadData];
+
+            // Insert the rows at the top incrementally, then shift the offset
+            // by the growth in content size so the visible messages stay put.
+            if ([weakSelf.tableView numberOfRowsInSection:0] + (NSInteger)newMessages.count == (NSInteger)weakSelf.messages.count) {
+                NSMutableArray *insertPaths = [NSMutableArray arrayWithCapacity:newMessages.count];
+                for (NSUInteger i = 0; i < newMessages.count; i++) {
+                    [insertPaths addObject:[NSIndexPath indexPathForRow:i inSection:0]];
+                }
+                [weakSelf.tableView beginUpdates];
+                [weakSelf.tableView insertRowsAtIndexPaths:insertPaths withRowAnimation:UITableViewRowAnimationNone];
+                [weakSelf.tableView endUpdates];
+            } else {
+                [weakSelf.tableView reloadData];
+            }
             [weakSelf.tableView layoutIfNeeded];
 
             CGFloat newHeight = weakSelf.tableView.contentSize.height;
@@ -532,6 +545,8 @@
 - (void)rebuildMessageLayout {
     [self recomputeAlbums];
     [self recomputeDateDividers];
+    // Keep the id → row map in sync; targeted row updates below rely on it.
+    [self rebuildMessageIndex];
 }
 
 - (NSArray<NSNumber *> *)messageIdsForMessage:(TGMessage *)message {
@@ -998,7 +1013,7 @@
         raw[@"content"] = update[@"new_content"] ?: @{};
         [message updateWithDictionary:raw];
         [self rebuildMessageLayout];
-        [self.tableView reloadData];
+        [self reloadMessageRowAtIndex:(NSInteger)index];
         return;
     }
 
@@ -1021,7 +1036,7 @@
         raw[@"edit_date"] = update[@"edit_date"] ?: @0;
         [message updateWithDictionary:raw];
         [self rebuildMessageLayout];
-        [self.tableView reloadData];
+        [self reloadMessageRowAtIndex:(NSInteger)index];
         return;
     }
 
@@ -1044,9 +1059,22 @@
         if (indexes.count == 0) {
             return;
         }
+        // Capture the row paths while the index map is still valid, then
+        // remove incrementally so the table does not jump.
+        NSMutableArray *deletePaths = [NSMutableArray array];
+        [indexes enumerateIndexesUsingBlock:^(NSUInteger index, BOOL *stop) {
+            [deletePaths addObject:[NSIndexPath indexPathForRow:index inSection:0]];
+        }];
+        NSInteger rowsBefore = [self.tableView numberOfRowsInSection:0];
         [self.messages removeObjectsAtIndexes:indexes];
         [self rebuildMessageLayout];
-        [self.tableView reloadData];
+        if (rowsBefore == (NSInteger)deletePaths.count + (NSInteger)self.messages.count) {
+            [self.tableView beginUpdates];
+            [self.tableView deleteRowsAtIndexPaths:deletePaths withRowAnimation:UITableViewRowAnimationFade];
+            [self.tableView endUpdates];
+        } else {
+            [self.tableView reloadData];
+        }
         [self updateEmptyState];
         return;
     }
@@ -1091,15 +1119,18 @@
         if (TGInt64Value(update[@"chat_id"]) == self.chatId) {
             int64_t lastReadId = TGInt64Value(update[@"last_read_outbox_message_id"]);
             self.lastReadOutboxMessageId = lastReadId;
-            BOOL didUpdate = NO;
-            for (TGMessage *msg in self.messages) {
+            __block BOOL didUpdate = NO;
+            NSMutableArray *changedPaths = [NSMutableArray array];
+            [self.messages enumerateObjectsUsingBlock:^(TGMessage *msg, NSUInteger index, BOOL *stop) {
                 if (msg.isOutgoing && !msg.isRead && msg.messageId <= lastReadId) {
                     msg.isRead = YES;
                     didUpdate = YES;
+                    [changedPaths addObject:[NSIndexPath indexPathForRow:index inSection:0]];
                 }
-            }
-            if (didUpdate) {
-                [self.tableView reloadData];
+            }];
+            // Reload only the affected rows so the scroll position stays put.
+            if (didUpdate && [self.tableView numberOfRowsInSection:0] == (NSInteger)self.messages.count) {
+                [self.tableView reloadRowsAtIndexPaths:changedPaths withRowAnimation:UITableViewRowAnimationNone];
             }
         }
         return;
@@ -1119,7 +1150,7 @@
         NSMutableDictionary *raw = [message.raw mutableCopy] ?: [NSMutableDictionary dictionary];
         raw[@"interaction_info"] = update[@"interaction_info"] ?: @{};
         [message updateWithDictionary:raw];
-        [self.tableView reloadData];
+        [self reloadMessageRowAtIndex:(NSInteger)indexNumber.unsignedIntegerValue];
         return;
     }
 }
@@ -1472,7 +1503,7 @@
         TGMessage *existing = self.messages[existingIndex.unsignedIntegerValue];
         [existing updateWithDictionary:dictionary];
         [self rebuildMessageLayout];
-        [self.tableView reloadData];
+        [self reloadMessageRowAtIndex:existingIndex.unsignedIntegerValue];
     } else {
         NSUInteger insertIndex = self.messages.count;
         for (NSUInteger i = 0; i < self.messages.count; i++) {
@@ -1483,7 +1514,7 @@
         }
         [self.messages insertObject:message atIndex:insertIndex];
         [self rebuildMessageLayout];
-        [self.tableView reloadData];
+        [self insertMessageRowAtIndex:(NSInteger)insertIndex];
     }
 
     self.totalCount = MAX(self.totalCount, (NSInteger)self.messages.count);
@@ -1505,7 +1536,13 @@
 
     NSNumber *oldIndexNumber = self.messageIndexById[@(oldMessageId)];
     if (oldIndexNumber != nil && oldIndexNumber.unsignedIntegerValue < self.messages.count) {
-        self.messages[oldIndexNumber.unsignedIntegerValue] = newMessage;
+        NSUInteger oldIndex = oldIndexNumber.unsignedIntegerValue;
+        self.messages[oldIndex] = newMessage;
+        [self rebuildMessageLayout];
+        NSNumber *newIndexNumber = self.messageIndexById[@(newMessage.messageId)];
+        [self reloadMessageRowAtIndex:(newIndexNumber != nil
+                                           ? (NSInteger)newIndexNumber.unsignedIntegerValue
+                                           : (NSInteger)oldIndex)];
     } else {
         NSNumber *existingIndex = self.messageIndexById[@(newMessage.messageId)];
         if (existingIndex != nil && existingIndex.unsignedIntegerValue < self.messages.count) {
@@ -1513,9 +1550,9 @@
         } else {
             [self.messages addObject:newMessage];
         }
+        [self rebuildMessageLayout];
+        [self insertMessageRowAtIndex:(NSInteger)(self.messages.count - 1)];
     }
-    [self rebuildMessageLayout];
-    [self.tableView reloadData];
     [self updateEmptyState];
 
     if ([self isNearBottom]) {
@@ -1527,6 +1564,47 @@
 
 - (void)updateEmptyState {
     self.emptyLabel.hidden = self.messages.count > 0 || self.spinner.isAnimating;
+}
+
+#pragma mark - Targeted row updates
+
+/// Reloads one message row (plus the row after it, whose group-start layout
+/// depends on the previous row) without rebuilding the whole table, so the
+/// scroll position and visible cells stay exactly where they are.
+- (void)reloadMessageRowAtIndex:(NSInteger)index {
+    if (index < 0 || index >= (NSInteger)self.messages.count) {
+        [self.tableView reloadData];
+        return;
+    }
+    // Guard: album regrouping can change the row count; a full reload is the
+    // only correct option in that case.
+    if ([self.tableView numberOfRowsInSection:0] != (NSInteger)self.messages.count) {
+        [self.tableView reloadData];
+        return;
+    }
+    NSMutableArray *paths = [NSMutableArray arrayWithObject:[NSIndexPath indexPathForRow:index inSection:0]];
+    if (index + 1 < (NSInteger)self.messages.count) {
+        [paths addObject:[NSIndexPath indexPathForRow:index + 1 inSection:0]];
+    }
+    [self.tableView reloadRowsAtIndexPaths:paths withRowAnimation:UITableViewRowAnimationNone];
+}
+
+/// Inserts one message row incrementally, preserving the scroll position and
+/// avoiding the full-table flash of reloadData.
+- (void)insertMessageRowAtIndex:(NSInteger)index {
+    if (index < 0 || index > (NSInteger)self.messages.count) {
+        [self.tableView reloadData];
+        return;
+    }
+    if ([self.tableView numberOfRowsInSection:0] + 1 != (NSInteger)self.messages.count) {
+        // Row structure changed beyond this insertion (albums, dividers).
+        [self.tableView reloadData];
+        return;
+    }
+    [self.tableView beginUpdates];
+    [self.tableView insertRowsAtIndexPaths:@[[NSIndexPath indexPathForRow:index inSection:0]]
+                          withRowAnimation:UITableViewRowAnimationNone];
+    [self.tableView endUpdates];
 }
 
 #pragma mark - UITableView

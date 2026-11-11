@@ -50,7 +50,7 @@
 }
 
 + (UIColor *)chatBackgroundColor {
-    return [UIColor tg_colorWithHex:0xDEE7F0];
+    return [UIColor tg_colorWithHex:0xE7E7E9];
 }
 
 + (UIColor *)groupedBackgroundColor {

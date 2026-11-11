@@ -281,7 +281,8 @@
     else { [handle seekToEndOfFile]; [handle writeData:data]; [handle closeFile]; }
 
     if ([type isEqualToString:@"authorizationStateReady"]) {
-        [self showChatsAnimated:YES];
+        // Swap instantly: the animated cross-dissolve reads as a loading screen.
+        [self showChatsAnimated:NO];
         return;
     }
 
@@ -301,7 +302,7 @@
 }
 
 - (void)tgClientDidBecomeReady:(TGTDLibClient *)client {
-    [self showChatsAnimated:YES];
+    [self showChatsAnimated:NO];
 }
 
 - (void)tgClient:(TGTDLibClient *)client didReceiveUpdate:(NSDictionary *)update {
