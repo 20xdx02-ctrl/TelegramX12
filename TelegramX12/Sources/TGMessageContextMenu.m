@@ -73,15 +73,23 @@ static const CGFloat TGMenuCardCornerRadius = 14.0;
     }
 
     // Anchor the card to the bubble: prefer directly above, fall back below.
-    CGFloat safeTop = CGRectGetMinY(self.safeAreaLayoutGuide.layoutFrame) + 8.0;
-    CGFloat safeBottom = CGRectGetHeight(self.bounds) - CGRectGetMaxY(self.safeAreaLayoutGuide.layoutFrame) + 8.0;
-    CGFloat cardY = CGRectGetMinY(self.anchorRect) - cardHeight - 10.0;
-    if (cardY < safeTop) {
-        cardY = CGRectGetMaxY(self.anchorRect) + 10.0;
+    // NOTE: safeAreaLayoutGuide is not populated for a view that has not been
+    // added to a window yet, so clamp against plain view bounds instead.
+    CGFloat topLimit = 12.0;
+    CGFloat bottomLimit = CGRectGetHeight(self.bounds) - 12.0;
+    CGFloat cardY = 0.0;
+    if (CGRectIsEmpty(self.anchorRect)) {
+        cardY = floor((CGRectGetHeight(self.bounds) - cardHeight) / 2.0);
+    } else {
+        cardY = CGRectGetMinY(self.anchorRect) - cardHeight - 10.0;
+        if (cardY < topLimit) {
+            cardY = CGRectGetMaxY(self.anchorRect) + 10.0;
+        }
+        cardY = MAX(topLimit, MIN(cardY, bottomLimit - cardHeight));
     }
+
     CGFloat cardX = CGRectGetMidX(self.anchorRect) - cardWidth / 2.0;
     cardX = MAX(8.0, MIN(cardX, CGRectGetWidth(self.bounds) - cardWidth - 8.0));
-    cardY = MAX(safeTop, MIN(cardY, CGRectGetHeight(self.bounds) - cardHeight - safeBottom));
 
     _cardView = [[UIView alloc] initWithFrame:CGRectMake(cardX, cardY, cardWidth, cardHeight)];
     _cardView.backgroundColor = [UIColor colorWithWhite:0.16 alpha:0.98];
