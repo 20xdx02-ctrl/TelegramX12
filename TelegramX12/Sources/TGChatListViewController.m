@@ -25,6 +25,8 @@
 @property (nonatomic) int32_t savedMessagesDate;
 @property (nonatomic) NSInteger pendingChatLoads;
 @property (nonatomic) BOOL didLoadOnce;
+@property (nonatomic) BOOL didStartInitialLoad;
+@property (nonatomic) NSInteger authWaitAttempts;
 @end
 
 @implementation TGChatListViewController
@@ -106,9 +108,52 @@
         [self.spinner.centerYAnchor constraintEqualToAnchor:self.tableView.centerYAnchor]
     ]];
 
+    [self initialLoadWhenReady];
+}
+
+#pragma mark - Startup loading
+
+- (BOOL)isClientAuthorized {
+    NSDictionary *state = self.client.authorizationState;
+    return [TGStringValue(state[@"@type"]) isEqualToString:@"authorizationStateReady"];
+}
+
+/// With a cached session the chat list is the launch screen, but TDLib may
+/// still be re-authorizing. Wait for readiness (short poll as a fallback for
+/// the case where the ready callback arrived before this controller existed)
+/// before issuing history requests, so the first frame is the list itself.
+- (void)initialLoadWhenReady {
+    if (self.didStartInitialLoad) {
+        return;
+    }
+    if ([self isClientAuthorized]) {
+        self.didStartInitialLoad = YES;
+        [self loadChats];
+        [self loadArchiveFolder];
+        [self refreshSavedMessagesInfo];
+        return;
+    }
+    if (self.authWaitAttempts >= 40) {
+        return;
+    }
+    self.authWaitAttempts += 1;
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (weakSelf.viewIfLoaded.window == nil) {
+            return;
+        }
+        [weakSelf initialLoadWhenReady];
+    });
+}
+
+/// Called by the app delegate when authorizationStateReady arrives.
+- (void)handleAuthorizationReady {
+    if (!self.didStartInitialLoad) {
+        [self initialLoadWhenReady];
+        return;
+    }
     [self loadChats];
     [self loadArchiveFolder];
-    [self refreshSavedMessagesInfo];
 }
 
 /// The main list never receives archive-only chats from getChats(chatListMain),

@@ -73,6 +73,13 @@ static void TGXLogLine(NSString *format, ...) {
     return self;
 }
 
+- (BOOL)hasCachedSession {
+    NSArray<NSString *> *paths = NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES);
+    NSString *databaseDirectory = [paths.firstObject stringByAppendingPathComponent:@"TelegramX12/tdlib-db"];
+    NSArray<NSString *> *contents = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:databaseDirectory error:NULL];
+    return contents.count > 0;
+}
+
 - (void)start {
     if (self.started) {
         return;

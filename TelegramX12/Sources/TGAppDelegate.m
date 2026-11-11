@@ -35,7 +35,14 @@
     // deliver a cached authorization state.  On iOS 12 an already-authorized
     // account can otherwise replace the root controller while launch is still
     // being processed, which terminates the process with SIGABRT.
-    [self showLoginAnimated:NO];
+    // A cached TDLib session means we can go straight to the chat list: no
+    // login/loading screen flash while TDLib re-authorizes in the background.
+    // Fresh installs still start on the login screen.
+    if ([self.client hasCachedSession]) {
+        [self showChatsAnimated:NO];
+    } else {
+        [self showLoginAnimated:NO];
+    }
     [self.window makeKeyAndVisible];
 
     TGTDLibClient *client = self.client;
@@ -283,6 +290,7 @@
     if ([type isEqualToString:@"authorizationStateReady"]) {
         // Swap instantly: the animated cross-dissolve reads as a loading screen.
         [self showChatsAnimated:NO];
+        [self notifyAuthorizationReady];
         return;
     }
 
@@ -303,6 +311,17 @@
 
 - (void)tgClientDidBecomeReady:(TGTDLibClient *)client {
     [self showChatsAnimated:NO];
+    [self notifyAuthorizationReady];
+}
+
+/// The chat list may already be the root (cached session at launch) before
+/// TDLib finishes authorizing; let it perform its first data load now.
+- (void)notifyAuthorizationReady {
+    for (UIViewController *vc in [self visibleUpdateTargets]) {
+        if ([vc respondsToSelector:@selector(handleAuthorizationReady)]) {
+            [(TGChatListViewController *)vc handleAuthorizationReady];
+        }
+    }
 }
 
 - (void)tgClient:(TGTDLibClient *)client didReceiveUpdate:(NSDictionary *)update {

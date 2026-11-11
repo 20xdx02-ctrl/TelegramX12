@@ -105,7 +105,11 @@
     self.tableView.dataSource = self;
     self.tableView.delegate = self;
     self.tableView.separatorStyle = UITableViewCellSeparatorStyleNone;
-    self.tableView.estimatedRowHeight = 60.0;
+    self.tableView.backgroundColor = [TGTheme chatBackgroundColor];
+    // Exact heights come from heightForRowAtIndexPath; leaving estimates on
+    // makes UITableView place rows at estimated offsets and then correct them
+    // when paginating history, which reads as the list jumping.
+    self.tableView.estimatedRowHeight = 0.0;
     self.tableView.keyboardDismissMode = UIScrollViewKeyboardDismissModeInteractive;
     [self.tableView registerClass:[TGMessageCell class] forCellReuseIdentifier:@"TGMessageCell"];
     [self.view addSubview:self.tableView];
@@ -284,6 +288,10 @@
                 return;
             }
             [weakSelf replaceMessagesWithDictionaries:messages totalCount:totalCount];
+            // Sender names affect row heights (group layouts) — settle this
+            // before laying out and scrolling, otherwise cells reflow and the
+            // list visibly jumps right after opening the chat.
+            [weakSelf updateSenderVisibility];
             [weakSelf placeUnreadDividerIfNeeded];
             [weakSelf.tableView reloadData];
             [weakSelf.tableView layoutIfNeeded];
@@ -293,7 +301,6 @@
                 [weakSelf scrollToBottomAnimated:NO];
             }
             [weakSelf markMessagesRead];
-            [weakSelf updateSenderVisibility];
             [weakSelf updateEmptyState];
 
             // If TDLib only returned 1 message initially because server history is still loading in background,

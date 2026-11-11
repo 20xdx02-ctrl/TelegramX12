@@ -27,6 +27,9 @@ typedef void (^TGStickerSectionsBlock)(NSArray<NSDictionary *> * _Nullable secti
 @property (nonatomic, readonly) BOOL isReady;
 
 - (void)start;
+/// YES when a TDLib database from a previous run exists — the app can show the
+/// chat list immediately at launch instead of flashing a login/loading screen.
+- (BOOL)hasCachedSession;
 - (void)shutdown;
 
 - (BOOL)hasCredentials;

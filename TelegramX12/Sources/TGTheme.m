@@ -30,7 +30,7 @@
 }
 
 + (UIColor *)incomingBubbleColor {
-    return [UIColor whiteColor];
+    return [UIColor tg_colorWithHex:0xEFEFF1];
 }
 
 + (UIColor *)secondaryTextColor {
@@ -50,7 +50,7 @@
 }
 
 + (UIColor *)chatBackgroundColor {
-    return [UIColor tg_colorWithHex:0xE7E7E9];
+    return [UIColor tg_colorWithHex:0xDEDEE2];
 }
 
 + (UIColor *)groupedBackgroundColor {
