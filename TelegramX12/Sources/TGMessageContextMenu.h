@@ -8,6 +8,8 @@ typedef NS_ENUM(NSInteger, TGMessageContextAction) {
     TGMessageContextActionForward,
     TGMessageContextActionEdit,
     TGMessageContextActionDelete,
+    TGMessageContextActionGallery,
+    TGMessageContextActionCamera,
 };
 
 /// Telegram X-style message context menu: a dark floating card with a row of

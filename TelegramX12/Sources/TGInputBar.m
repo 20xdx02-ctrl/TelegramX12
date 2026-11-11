@@ -4,6 +4,7 @@
 @interface TGInputBar () <UITextFieldDelegate>
 @property (nonatomic, strong, readwrite) UITextField *textField;
 @property (nonatomic, strong) UIButton *attachButton;
+@property (nonatomic, strong) UIButton *stickerButton;
 @property (nonatomic, strong) UIButton *sendButton;
 @property (nonatomic, strong) UIView *separatorView;
 
@@ -36,6 +37,14 @@
         _attachButton.accessibilityLabel = @"Załącznik";
         [_attachButton addTarget:self action:@selector(attachTapped) forControlEvents:UIControlEventTouchUpInside];
         [self addSubview:_attachButton];
+
+        _stickerButton = [UIButton buttonWithType:UIButtonTypeCustom];
+        _stickerButton.translatesAutoresizingMaskIntoConstraints = NO;
+        [_stickerButton setTitle:@"😊" forState:UIControlStateNormal];
+        _stickerButton.titleLabel.font = [UIFont systemFontOfSize:20.0];
+        _stickerButton.accessibilityLabel = @"Naklejki";
+        [_stickerButton addTarget:self action:@selector(stickerTapped) forControlEvents:UIControlEventTouchUpInside];
+        [self addSubview:_stickerButton];
 
         _textField = [[UITextField alloc] initWithFrame:CGRectZero];
         _textField.translatesAutoresizingMaskIntoConstraints = NO;
@@ -132,12 +141,17 @@
             [_replyCancelButton.widthAnchor constraintEqualToConstant:28.0],
             [_replyCancelButton.heightAnchor constraintEqualToConstant:28.0],
 
-            [_attachButton.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:8.0],
+            [_attachButton.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:6.0],
             [_attachButton.centerYAnchor constraintEqualToAnchor:_textField.centerYAnchor],
-            [_attachButton.widthAnchor constraintEqualToConstant:32.0],
+            [_attachButton.widthAnchor constraintEqualToConstant:30.0],
             [_attachButton.heightAnchor constraintEqualToConstant:32.0],
 
-            [_textField.leadingAnchor constraintEqualToAnchor:_attachButton.trailingAnchor constant:6.0],
+            [_stickerButton.leadingAnchor constraintEqualToAnchor:_attachButton.trailingAnchor constant:2.0],
+            [_stickerButton.centerYAnchor constraintEqualToAnchor:_textField.centerYAnchor],
+            [_stickerButton.widthAnchor constraintEqualToConstant:30.0],
+            [_stickerButton.heightAnchor constraintEqualToConstant:32.0],
+
+            [_textField.leadingAnchor constraintEqualToAnchor:_stickerButton.trailingAnchor constant:6.0],
             [_textField.topAnchor constraintEqualToAnchor:_replyContainer.bottomAnchor constant:7.0],
             [_textField.heightAnchor constraintEqualToConstant:36.0],
             [_textField.trailingAnchor constraintEqualToAnchor:_sendButton.leadingAnchor constant:-8.0],
@@ -182,6 +196,12 @@
 - (void)attachTapped {
     if (self.onAttachTap) {
         self.onAttachTap();
+    }
+}
+
+- (void)stickerTapped {
+    if (self.onStickerTap) {
+        self.onStickerTap();
     }
 }
 

@@ -6,6 +6,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 @property (nonatomic, copy, nullable) void (^onSend)(NSString *text);
 @property (nonatomic, copy, nullable) void (^onAttachTap)(void);
+@property (nonatomic, copy, nullable) void (^onStickerTap)(void);
 /// Called when the user dismisses the quote strip above the text field.
 @property (nonatomic, copy, nullable) void (^onCancelReply)(void);
 @property (nonatomic, strong, readonly) UITextField *textField;

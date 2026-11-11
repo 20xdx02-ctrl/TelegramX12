@@ -124,6 +124,9 @@
     self.inputBar.onAttachTap = ^{
         [weakSelf presentAttachmentActionSheet];
     };
+    self.inputBar.onStickerTap = ^{
+        [weakSelf toggleStickerPicker];
+    };
     self.inputBar.onCancelReply = ^{
         [weakSelf cancelReply];
     };
@@ -831,6 +834,8 @@
                     [weakSelf confirmDeleteMessage:message];
                     break;
                 }
+                default:
+                    break;
             }
         });
     }];
@@ -1300,33 +1305,42 @@
 }
 
 - (void)presentAttachmentActionSheet {
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:nil message:nil preferredStyle:UIAlertControllerStyleActionSheet];
+    NSMutableArray<NSNumber *> *actions = [NSMutableArray array];
     if ([UIImagePickerController isSourceTypeAvailable:UIImagePickerControllerSourceTypePhotoLibrary]) {
-        [sheet addAction:[UIAlertAction actionWithTitle:@"Zdjęcie z galerii" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-            UIImagePickerController *picker = [[UIImagePickerController alloc] init];
-            picker.sourceType = UIImagePickerControllerSourceTypePhotoLibrary;
-            picker.delegate = self;
-            [self presentViewController:picker animated:YES completion:nil];
-        }]];
+        [actions addObject:@(TGMessageContextActionGallery)];
     }
     if ([UIImagePickerController isSourceTypeAvailable:UIImagePickerControllerSourceTypeCamera]) {
-        [sheet addAction:[UIAlertAction actionWithTitle:@"Zrób zdjęcie" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-            UIImagePickerController *picker = [[UIImagePickerController alloc] init];
-            picker.sourceType = UIImagePickerControllerSourceTypeCamera;
-            picker.delegate = self;
-            [self presentViewController:picker animated:YES completion:nil];
-        }]];
+        [actions addObject:@(TGMessageContextActionCamera)];
     }
+    if (actions.count == 0) {
+        return;
+    }
+    // Same dark card style as the message context menu, anchored above the
+    // input bar (stickers live on their own button next to the attach clip).
+    CGRect anchorRect = [self.inputBar convertRect:self.inputBar.bounds toView:self.view];
     __weak typeof(self) weakSelf = self;
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Stickery" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-        [weakSelf toggleStickerPicker];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Anuluj" style:UIAlertActionStyleCancel handler:nil]];
-    if (sheet.popoverPresentationController != nil) {
-        sheet.popoverPresentationController.sourceView = self.inputBar;
-        sheet.popoverPresentationController.sourceRect = self.inputBar.bounds;
-    }
-    [self presentViewController:sheet animated:YES completion:nil];
+    [TGMessageContextMenu presentInView:self.view
+                             bubbleRect:anchorRect
+                                 emojis:@[]
+                         allowedActions:actions
+                             onReaction:nil
+                               onAction:^(TGMessageContextAction action) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            UIImagePickerController *picker = [[UIImagePickerController alloc] init];
+            picker.delegate = weakSelf;
+            switch (action) {
+                case TGMessageContextActionGallery:
+                    picker.sourceType = UIImagePickerControllerSourceTypePhotoLibrary;
+                    break;
+                case TGMessageContextActionCamera:
+                    picker.sourceType = UIImagePickerControllerSourceTypeCamera;
+                    break;
+                default:
+                    return;
+            }
+            [weakSelf presentViewController:picker animated:YES completion:nil];
+        });
+    }];
 }
 
 - (void)toggleStickerPicker {

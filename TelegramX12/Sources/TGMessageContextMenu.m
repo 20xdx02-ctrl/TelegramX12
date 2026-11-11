@@ -133,6 +133,8 @@ static const CGFloat TGMenuCardCornerRadius = 14.0;
         @(TGMessageContextActionForward): @"Przekaż",
         @(TGMessageContextActionEdit): @"Edytuj",
         @(TGMessageContextActionDelete): @"Usuń",
+        @(TGMessageContextActionGallery): @"Zdjęcie z galerii",
+        @(TGMessageContextActionCamera): @"Zrób zdjęcie",
     };
     for (NSUInteger i = 0; i < actions.count; i++) {
         TGMessageContextAction action = (TGMessageContextAction)actions[i].integerValue;
@@ -234,6 +236,8 @@ static const CGFloat TGMenuCardCornerRadius = 14.0;
         @"Przekaż": @(TGMessageContextActionForward),
         @"Edytuj": @(TGMessageContextActionEdit),
         @"Usuń": @(TGMessageContextActionDelete),
+        @"Zdjęcie z galerii": @(TGMessageContextActionGallery),
+        @"Zrób zdjęcie": @(TGMessageContextActionCamera),
     };
     NSNumber *actionNumber = titles[label];
     void (^onAction)(TGMessageContextAction) = self.onAction;
