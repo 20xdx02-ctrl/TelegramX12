@@ -33,6 +33,18 @@ NS_ASSUME_NONNULL_BEGIN
 /// Marks a chat as recently opened so its message cache is kept around.
 - (void)markChatOpened:(int64_t)chatId;
 
+#pragma mark - Avatars
+
+/// Local copy of an entity's avatar (chat id / user id), or nil when the cache
+/// is empty or was stored for a different photo. TDLib file ids are only valid
+/// within one run, so the on-disk key is the entity id and the file id is kept
+/// in a sidecar for validation.
+- (nullable NSString *)avatarPathForIdentifier:(int64_t)identifier fileId:(int32_t)fileId;
+/// Copies a TDLib-downloaded photo into the cache for instant cold starts.
+- (void)storeAvatarFromPath:(NSString *)path
+                 identifier:(int64_t)identifier
+                     fileId:(int32_t)fileId;
+
 - (void)clear;
 
 @end

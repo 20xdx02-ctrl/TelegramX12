@@ -1,4 +1,5 @@
 #import "TGAvatarView.h"
+#import "TGCache.h"
 #import "TGTheme.h"
 #import "TGTDLibClient.h"
 
@@ -66,16 +67,31 @@
                        title:(NSString *)title
                   identifier:(int64_t)identifier {
     [self setTitle:title identifier:identifier];
-    if (fileId <= 0 || client == nil) {
+    if (fileId <= 0) {
         return;
     }
     self.currentFileId = fileId;
+
+    // Our own snapshot is checked first so avatars appear instantly on a cold
+    // start, before TDLib has re-registered its files.
+    NSString *cachedPath = [[TGCache sharedCache] avatarPathForIdentifier:identifier fileId:fileId];
+    if (cachedPath.length > 0) {
+        UIImage *cachedImage = [UIImage imageWithContentsOfFile:cachedPath];
+        if (cachedImage != nil) {
+            [self setImage:cachedImage];
+            return;
+        }
+    }
+    if (client == nil) {
+        return;
+    }
 
     NSString *path = [client localPathForFileId:fileId];
     if (path.length > 0 && [[NSFileManager defaultManager] fileExistsAtPath:path]) {
         UIImage *img = [UIImage imageWithContentsOfFile:path];
         if (img != nil) {
             [self setImage:img];
+            [[TGCache sharedCache] storeAvatarFromPath:path identifier:identifier fileId:fileId];
             return;
         }
     }
@@ -86,6 +102,7 @@
             UIImage *img = [UIImage imageWithContentsOfFile:downloadedPath];
             if (img != nil) {
                 [weakSelf setImage:img];
+                [[TGCache sharedCache] storeAvatarFromPath:downloadedPath identifier:identifier fileId:fileId];
             }
         }
     }];

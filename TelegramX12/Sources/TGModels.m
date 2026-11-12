@@ -442,6 +442,14 @@ NSString *TGMessagePreviewText(NSDictionary *content) {
     dictionary[@"type"] = chatType;
     dictionary[@"positions"] = positions;
 
+    int32_t smallPhotoId = TGInt32Value(self.raw[@"photo"][@"small"][@"id"]);
+    if (smallPhotoId > 0) {
+        dictionary[@"photo"] = @{
+            @"@type": @"chatPhoto",
+            @"small": @{ @"@type": @"file", @"id": @(smallPhotoId) }
+        };
+    }
+
     if (self.lastMessageId != 0) {
         dictionary[@"last_message"] = @{
             @"id": @(self.lastMessageId),

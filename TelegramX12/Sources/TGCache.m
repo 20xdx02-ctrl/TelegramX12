@@ -3,11 +3,13 @@
 static NSInteger const TGCacheMaxChats = 100;
 static NSInteger const TGCacheMaxMessagesPerChat = 24;
 static NSInteger const TGCacheMaxRecentChats = 12;
+static NSInteger const TGCacheMaxAvatars = 400;
 
 @interface TGCache ()
 
 @property (nonatomic, copy) NSString *cacheDirectory;
 @property (nonatomic, copy) NSString *messagesDirectory;
+@property (nonatomic, copy) NSString *avatarsDirectory;
 @property (nonatomic) dispatch_queue_t cacheQueue;
 
 // All properties below are confined to `cacheQueue`.
@@ -35,8 +37,10 @@ static NSInteger const TGCacheMaxRecentChats = 12;
         NSString *documents = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
         _cacheDirectory = [documents stringByAppendingPathComponent:@"TGCache"];
         _messagesDirectory = [_cacheDirectory stringByAppendingPathComponent:@"messages"];
+        _avatarsDirectory = [_cacheDirectory stringByAppendingPathComponent:@"avatars"];
         [fileManager createDirectoryAtPath:_cacheDirectory withIntermediateDirectories:YES attributes:nil error:NULL];
         [fileManager createDirectoryAtPath:_messagesDirectory withIntermediateDirectories:YES attributes:nil error:NULL];
+        [fileManager createDirectoryAtPath:_avatarsDirectory withIntermediateDirectories:YES attributes:nil error:NULL];
         _cacheQueue = dispatch_queue_create("com.telegramx12.cache", DISPATCH_QUEUE_SERIAL);
         dispatch_set_target_queue(_cacheQueue, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0));
         _recentChatIds = [NSMutableArray array];
@@ -57,6 +61,14 @@ static NSInteger const TGCacheMaxRecentChats = 12;
 
 - (NSString *)messagesPathForChat:(int64_t)chatId {
     return [self.messagesDirectory stringByAppendingPathComponent:[NSString stringWithFormat:@"messages-%lld.json", chatId]];
+}
+
+- (NSString *)filePathForAvatarIdentifier:(int64_t)identifier {
+    return [self.avatarsDirectory stringByAppendingPathComponent:[NSString stringWithFormat:@"avatar-%lld.img", identifier]];
+}
+
+- (NSString *)fileIdPathForAvatarIdentifier:(int64_t)identifier {
+    return [self.avatarsDirectory stringByAppendingPathComponent:[NSString stringWithFormat:@"avatar-%lld.id", identifier]];
 }
 
 #pragma mark - Chat list
@@ -205,6 +217,84 @@ static NSInteger const TGCacheMaxRecentChats = 12;
     }
 }
 
+#pragma mark - Avatars
+
+- (NSString *)avatarPathForIdentifier:(int64_t)identifier fileId:(int32_t)fileId {
+    if (identifier == 0 || fileId <= 0) {
+        return nil;
+    }
+    __block NSString *result = nil;
+    dispatch_sync(self.cacheQueue, ^{
+        NSFileManager *fileManager = [NSFileManager defaultManager];
+        NSString *path = [self filePathForAvatarIdentifier:identifier];
+        if (![fileManager fileExistsAtPath:path]) {
+            return;
+        }
+        NSString *storedId = [NSString stringWithContentsOfFile:[self fileIdPathForAvatarIdentifier:identifier]
+                                                       encoding:NSUTF8StringEncoding
+                                                          error:NULL];
+        if (storedId.integerValue != (NSInteger)fileId) {
+            return;
+        }
+        result = path;
+    });
+    return result;
+}
+
+- (void)storeAvatarFromPath:(NSString *)path
+                 identifier:(int64_t)identifier
+                     fileId:(int32_t)fileId {
+    if (path.length == 0 || identifier == 0 || fileId <= 0) {
+        return;
+    }
+    dispatch_async(self.cacheQueue, ^{
+        NSFileManager *fileManager = [NSFileManager defaultManager];
+        if (![fileManager fileExistsAtPath:path]) {
+            return;
+        }
+        NSString *destination = [self filePathForAvatarIdentifier:identifier];
+        NSString *sidecar = [self fileIdPathForAvatarIdentifier:identifier];
+        NSString *storedId = [NSString stringWithContentsOfFile:sidecar encoding:NSUTF8StringEncoding error:NULL];
+        if (storedId.integerValue == (NSInteger)fileId && [fileManager fileExistsAtPath:destination]) {
+            return;
+        }
+        [fileManager removeItemAtPath:destination error:NULL];
+        if (![fileManager copyItemAtPath:path toPath:destination error:NULL]) {
+            return;
+        }
+        [[NSString stringWithFormat:@"%d", fileId] writeToFile:sidecar atomically:YES encoding:NSUTF8StringEncoding error:NULL];
+        [self pruneAvatarsLocked];
+    });
+}
+
+/// Keeps the avatar directory bounded; drops the least recently written files.
+- (void)pruneAvatarsLocked {
+    NSFileManager *fileManager = [NSFileManager defaultManager];
+    NSArray<NSString *> *files = [fileManager contentsOfDirectoryAtPath:self.avatarsDirectory error:NULL];
+    NSMutableArray<NSDictionary *> *entries = [NSMutableArray array];
+    for (NSString *file in files) {
+        if (![file hasSuffix:@".img"]) {
+            continue;
+        }
+        NSString *path = [self.avatarsDirectory stringByAppendingPathComponent:file];
+        NSDictionary *attributes = [fileManager attributesOfItemAtPath:path error:NULL];
+        NSDate *date = attributes[NSFileModificationDate] ?: [NSDate distantPast];
+        [entries addObject:@{ @"path": path, @"date": date }];
+    }
+    if ((NSInteger)entries.count <= TGCacheMaxAvatars) {
+        return;
+    }
+    [entries sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+        return [a[@"date"] compare:b[@"date"]];
+    }];
+    NSInteger excess = (NSInteger)entries.count - TGCacheMaxAvatars;
+    for (NSInteger index = 0; index < excess; index++) {
+        NSString *path = entries[(NSUInteger)index][@"path"];
+        [fileManager removeItemAtPath:path error:NULL];
+        [fileManager removeItemAtPath:[path stringByReplacingOccurrencesOfString:@".img" withString:@".id"] error:NULL];
+    }
+}
+
 #pragma mark - Reset
 
 - (void)clear {
@@ -214,6 +304,7 @@ static NSInteger const TGCacheMaxRecentChats = 12;
         [[NSFileManager defaultManager] removeItemAtPath:self.cacheDirectory error:NULL];
         [[NSFileManager defaultManager] createDirectoryAtPath:self.cacheDirectory withIntermediateDirectories:YES attributes:nil error:NULL];
         [[NSFileManager defaultManager] createDirectoryAtPath:self.messagesDirectory withIntermediateDirectories:YES attributes:nil error:NULL];
+        [[NSFileManager defaultManager] createDirectoryAtPath:self.avatarsDirectory withIntermediateDirectories:YES attributes:nil error:NULL];
     });
 }
 
