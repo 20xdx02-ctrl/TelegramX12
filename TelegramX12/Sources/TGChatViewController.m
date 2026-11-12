@@ -4,6 +4,7 @@
 #import "TGCache.h"
 #import "TGChatPickerViewController.h"
 #import "TGInputBar.h"
+#import "TGLog.h"
 #import "TGMessageCell.h"
 #import "TGMessageContextMenu.h"
 #import "TGModels.h"
@@ -57,6 +58,7 @@
 @property (nonatomic) BOOL didInitialLoad;
 /// True while cached messages are being restored (skips cache write-back).
 @property (nonatomic) BOOL restoringCache;
+@property (nonatomic) CFTimeInterval historyLoadStart;
 @property (nonatomic) BOOL visible;
 @property (nonatomic) BOOL showSenderNames;
 @property (nonatomic, copy) NSString *chatTitleForDisplay;
@@ -300,12 +302,17 @@
         self.lastReadOutboxMessageId = TGInt64Value(chat[@"last_read_outbox_message_id"]);
     }
     [self refreshHeaderSubtitle];
+    self.historyLoadStart = CACurrentMediaTime();
     __weak typeof(self) weakSelf = self;
     [self.client loadHistoryForChat:self.chatId fromMessageId:0 limit:50 completion:^(NSArray<NSDictionary *> *messages, NSInteger totalCount, NSDictionary *error) {
         dispatch_async(dispatch_get_main_queue(), ^{
             [weakSelf.spinner stopAnimating];
             [weakSelf.refreshControl endRefreshing];
             weakSelf.didInitialLoad = YES;
+            TGXLogLine(@"perf: history %lu msgs in %.0f ms (launch +%.0f ms)",
+                       (unsigned long)messages.count,
+                       (CACurrentMediaTime() - weakSelf.historyLoadStart) * 1000.0,
+                       TGLaunchElapsedMilliseconds());
             if (error != nil) {
                 NSString *message = TGStringValue(error[@"message"]);
                 if (message.length > 0) {
@@ -596,6 +603,7 @@
     if (cached.count == 0) {
         return;
     }
+    CFTimeInterval start = CACurrentMediaTime();
     self.restoringCache = YES;
     [self replaceMessagesWithDictionaries:cached totalCount:(NSInteger)cached.count];
     self.restoringCache = NO;
@@ -604,6 +612,10 @@
     [self.tableView layoutIfNeeded];
     [self scrollToBottomAnimated:NO];
     self.emptyLabel.hidden = YES;
+    TGXLogLine(@"perf: restored %lu cached messages in %.0f ms (launch +%.0f ms)",
+               (unsigned long)cached.count,
+               (CACurrentMediaTime() - start) * 1000.0,
+               TGLaunchElapsedMilliseconds());
 }
 
 /// Stores the tail of the conversation (raw TDLib dictionaries) for the next

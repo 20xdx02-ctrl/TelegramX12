@@ -1,5 +1,6 @@
 #import "TGTDLibClient.h"
 #import "TGConfig.h"
+#import "TGLog.h"
 #import "TGModels.h"
 #import "TGTheme.h"
 
@@ -7,35 +8,7 @@
 
 #import "td_json_client.h"
 
-static void TGXLogLine(NSString *format, ...) {
-    va_list args;
-    va_start(args, format);
-    NSString *message = [[NSString alloc] initWithFormat:format arguments:args];
-    va_end(args);
-
-    NSLog(@"[TGX] %@", message);
-
-    NSString *documents = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
-    if (documents.length == 0) {
-        return;
-    }
-    NSString *path = [documents stringByAppendingPathComponent:@"app.log"];
-    NSString *line = [NSString stringWithFormat:@"%@ %@\n", [NSDate date], message];
-    NSData *data = [line dataUsingEncoding:NSUTF8StringEncoding];
-    @synchronized (path) {
-        NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:path];
-        if (handle == nil) {
-            [data writeToFile:path atomically:YES];
-        } else {
-            @try {
-                [handle seekToEndOfFile];
-                [handle writeData:data];
-            } @catch (__unused NSException *exception) {
-            }
-            [handle closeFile];
-        }
-    }
-}
+#import <QuartzCore/QuartzCore.h>
 
 @interface TGTDLibClient ()
 
@@ -54,8 +27,25 @@ static void TGXLogLine(NSString *format, ...) {
 @property (nonatomic) BOOL started;
 @property (atomic) BOOL running;
 @property (nonatomic) BOOL tdlibParametersSent;
+@property (nonatomic) CFTimeInterval startTimestamp;
 
 @end
+
+static NSDictionary *TGDictionaryFromRaw(const char *raw) {
+    if (raw == NULL) {
+        return nil;
+    }
+    NSString *string = [NSString stringWithUTF8String:raw];
+    if (string.length == 0) {
+        return nil;
+    }
+    NSData *data = [string dataUsingEncoding:NSUTF8StringEncoding];
+    if (data == nil) {
+        return nil;
+    }
+    id object = [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
+    return [object isKindOfClass:[NSDictionary class]] ? (NSDictionary *)object : nil;
+}
 
 @implementation TGTDLibClient
 
@@ -89,12 +79,15 @@ static void TGXLogLine(NSString *format, ...) {
 
     self.clientId = td_create_client_id();
     TGXLogLine(@"td_create_client_id -> %d", self.clientId);
+    self.startTimestamp = CACurrentMediaTime();
 
     NSString *documents = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
     NSString *tdlog = [documents stringByAppendingPathComponent:@"tdlib.log"];
-    NSString *setLogRequest = [NSString stringWithFormat:@"{\"@type\":\"setLogStream\",\"log_stream\":{\"@type\":\"logStreamFile\",\"path\":\"%@\",\"max_file_size\":20971520}}", tdlog];
+    NSString *setLogRequest = [NSString stringWithFormat:@"{\"@type\":\"setLogStream\",\"log_stream\":{\"@type\":\"logStreamFile\",\"path\":\"%@\",\"max_file_size\":4194304}}", tdlog];
     td_send(self.clientId, setLogRequest.UTF8String);
-    td_send(self.clientId, "{\"@type\":\"setLogVerbosityLevel\",\"new_verbosity_level\":5}");
+    // Verbose TDLib logging writes tens of megabytes per launch and measurably
+    // slows startup on older devices; errors and warnings are enough.
+    td_send(self.clientId, "{\"@type\":\"setLogVerbosityLevel\",\"new_verbosity_level\":1}");
 
     self.receiveQueue = dispatch_queue_create("com.telegramx12.tdlib.receive", DISPATCH_QUEUE_SERIAL);
     self.running = YES;
@@ -110,27 +103,43 @@ static void TGXLogLine(NSString *format, ...) {
             if (raw == NULL) {
                 continue;
             }
-            NSString *string = [NSString stringWithUTF8String:raw];
-            if (string.length == 0) {
+            // TDLib emits bursts of hundreds of updates at startup. Drain them
+            // here and hand the main thread one batch instead of one hop per
+            // update, which otherwise floods the main queue for seconds.
+            NSMutableArray<NSDictionary *> *batch = [NSMutableArray array];
+            NSInteger drained = 0;
+            while (raw != NULL) {
+                static NSInteger receiveLogCount = 0;
+                receiveLogCount++;
+                if (receiveLogCount <= 60) {
+                    NSString *string = [NSString stringWithUTF8String:raw];
+                    if (string.length == 0) {
+                        string = @"";
+                    }
+                    NSString *preview = string.length > 800 ? [string substringToIndex:800] : string;
+                    TGXLogLine(@"recv #%ld: %@", (long)receiveLogCount, preview);
+                }
+                NSDictionary *dictionary = TGDictionaryFromRaw(raw);
+                if (dictionary != nil) {
+                    [batch addObject:dictionary];
+                }
+                drained++;
+                if (drained >= 300) {
+                    break;
+                }
+                raw = td_receive(0);
+            }
+            if (batch.count == 0) {
                 continue;
             }
-            static NSInteger receiveLogCount = 0;
-            receiveLogCount++;
-            if (receiveLogCount <= 60) {
-                NSString *preview = string.length > 800 ? [string substringToIndex:800] : string;
-                TGXLogLine(@"recv #%ld: %@", (long)receiveLogCount, preview);
-            }
-            NSData *data = [string dataUsingEncoding:NSUTF8StringEncoding];
-            id object = nil;
-            if (data != nil) {
-                object = [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
-            }
-            if (![object isKindOfClass:[NSDictionary class]]) {
-                continue;
-            }
-            NSDictionary *dictionary = (NSDictionary *)object;
             dispatch_async(dispatch_get_main_queue(), ^{
-                [weakSelf handleObject:dictionary];
+                TGTDLibClient *client = weakSelf;
+                if (client == nil) {
+                    return;
+                }
+                for (NSDictionary *dictionary in batch) {
+                    [client handleObject:dictionary];
+                }
             });
         }
     });
@@ -260,6 +269,11 @@ static void TGXLogLine(NSString *format, ...) {
     self.authorizationState = state;
     NSString *type = TGStringValue(state[@"@type"]);
     TGXLogLine(@"authorization state: %@", type);
+    if ([type isEqualToString:@"authorizationStateReady"] && self.startTimestamp > 0.0) {
+        TGXLogLine(@"perf: auth ready %.0f ms after TDLib start (launch +%.0f ms)",
+                   (CACurrentMediaTime() - self.startTimestamp) * 1000.0,
+                   TGLaunchElapsedMilliseconds());
+    }
     self.isReady = [type isEqualToString:@"authorizationStateReady"];
 
     if ([type isEqualToString:@"authorizationStateWaitTdlibParameters"]) {

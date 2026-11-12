@@ -1,4 +1,5 @@
 #import "TGAppDelegate.h"
+#import "TGLog.h"
 #import "TGTheme.h"
 #import "TGTDLibClient.h"
 #import "TGChatViewController.h"
@@ -38,15 +39,19 @@
     // A cached TDLib session means we can go straight to the chat list: no
     // login/loading screen flash while TDLib re-authorizes in the background.
     // Fresh installs still start on the login screen.
-    if ([self.client hasCachedSession]) {
+    BOOL cachedSession = [self.client hasCachedSession];
+    if (cachedSession) {
         [self showChatsAnimated:NO];
     } else {
         [self showLoginAnimated:NO];
     }
     [self.window makeKeyAndVisible];
+    TGXLogLine(@"perf: first UI at %.0f ms (cached session: %d)",
+               TGLaunchElapsedMilliseconds(),
+               cachedSession);
 
     TGTDLibClient *client = self.client;
-    dispatch_async(dispatch_get_main_queue(), ^{
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         [client start];
     });
     return YES;

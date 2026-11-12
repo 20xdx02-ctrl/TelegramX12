@@ -3,6 +3,7 @@
 #import <execinfo.h>
 
 #import "TGAppDelegate.h"
+#import "TGLog.h"
 
 static NSString *TGCrashLogPath(void) {
     return [NSHomeDirectory() stringByAppendingPathComponent:@"Documents/app.log"];
@@ -63,6 +64,7 @@ static void TGInstallCrashLogging(void) {
 
 int main(int argc, char *argv[]) {
     @autoreleasepool {
+        TGLaunchBegin();
         TGInstallCrashLogging();
         return UIApplicationMain(argc, argv, nil, NSStringFromClass([TGAppDelegate class]));
     }

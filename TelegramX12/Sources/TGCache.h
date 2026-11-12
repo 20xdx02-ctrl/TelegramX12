@@ -40,6 +40,9 @@ NS_ASSUME_NONNULL_BEGIN
 /// within one run, so the on-disk key is the entity id and the file id is kept
 /// in a sidecar for validation.
 - (nullable NSString *)avatarPathForIdentifier:(int64_t)identifier fileId:(int32_t)fileId;
+/// Best-effort cached avatar for an entity whose current TDLib file id is not
+/// known yet (cold start from cache); no freshness validation is performed.
+- (nullable NSString *)placeholderAvatarPathForIdentifier:(int64_t)identifier;
 /// Copies a TDLib-downloaded photo into the cache for instant cold starts.
 - (void)storeAvatarFromPath:(NSString *)path
                  identifier:(int64_t)identifier

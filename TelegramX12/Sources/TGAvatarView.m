@@ -73,16 +73,25 @@
     self.currentFileId = fileId;
 
     // Our own snapshot is checked first so avatars appear instantly on a cold
-    // start, before TDLib has re-registered its files.
-    NSString *cachedPath = [[TGCache sharedCache] avatarPathForIdentifier:identifier fileId:fileId];
+    // start, before TDLib has re-registered its files. When the TDLib file id
+    // is not known yet (chat restored from cache), any cached image is used as
+    // a placeholder until live chat data arrives.
+    NSString *cachedPath = nil;
+    if (fileId > 0) {
+        cachedPath = [[TGCache sharedCache] avatarPathForIdentifier:identifier fileId:fileId];
+    } else {
+        cachedPath = [[TGCache sharedCache] placeholderAvatarPathForIdentifier:identifier];
+    }
     if (cachedPath.length > 0) {
         UIImage *cachedImage = [UIImage imageWithContentsOfFile:cachedPath];
         if (cachedImage != nil) {
             [self setImage:cachedImage];
-            return;
+            if (fileId > 0) {
+                return;
+            }
         }
     }
-    if (client == nil) {
+    if (fileId <= 0 || client == nil) {
         return;
     }
 

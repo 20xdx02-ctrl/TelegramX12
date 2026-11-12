@@ -2,6 +2,7 @@
 
 #import "TGCache.h"
 #import "TGChatListCell.h"
+#import "TGLog.h"
 #import "TGChatPlaceholderViewController.h"
 #import "TGArchiveChatListViewController.h"
 #import "TGChatViewController.h"
@@ -9,6 +10,8 @@
 #import "TGSettingsViewController.h"
 #import "TGTDLibClient.h"
 #import "TGTheme.h"
+
+#import <QuartzCore/QuartzCore.h>
 
 @interface TGChatListViewController () <UITableViewDataSource, UITableViewDelegate, UISearchResultsUpdating, UISplitViewControllerDelegate>
 @property (nonatomic, strong) TGTDLibClient *client;
@@ -31,6 +34,12 @@
 /// Set while the list is being filled from the on-disk cache; suppresses a
 /// pointless write-back of the data we just read.
 @property (nonatomic) BOOL restoringCache;
+/// Guards against overlapping getChats requests (ready callback + polling).
+@property (nonatomic) BOOL loadingChats;
+@property (nonatomic) BOOL secondaryLoadsScheduled;
+@property (nonatomic) BOOL reloadScheduled;
+@property (nonatomic) CFTimeInterval chatsLoadStart;
+@property (nonatomic) CFTimeInterval detailsLoadStart;
 @end
 
 @implementation TGChatListViewController
@@ -127,12 +136,17 @@
     if (cached.count == 0) {
         return;
     }
+    CFTimeInterval start = CACurrentMediaTime();
     self.restoringCache = YES;
     for (NSDictionary *dictionary in cached) {
         [self mergeChatDictionary:dictionary];
     }
-    [self reloadUI];
+    [self reloadUIImmediately];
     self.restoringCache = NO;
+    TGXLogLine(@"perf: restored %lu cached chats in %.0f ms (launch +%.0f ms)",
+               (unsigned long)cached.count,
+               (CACurrentMediaTime() - start) * 1000.0,
+               TGLaunchElapsedMilliseconds());
 }
 
 - (void)saveChatListCache {
@@ -167,8 +181,7 @@
     if ([self isClientAuthorized]) {
         self.didStartInitialLoad = YES;
         [self loadChats];
-        [self loadArchiveFolder];
-        [self refreshSavedMessagesInfo];
+        [self scheduleSecondaryLoads];
         return;
     }
     if (self.authWaitAttempts >= 40) {
@@ -191,7 +204,21 @@
         return;
     }
     [self loadChats];
-    [self loadArchiveFolder];
+}
+
+/// Archive folder + Saved Messages preview need extra TDLib round-trips; they
+/// are not part of the first frame, so run them after the main list is on
+/// screen instead of competing with it during startup.
+- (void)scheduleSecondaryLoads {
+    if (self.secondaryLoadsScheduled) {
+        return;
+    }
+    self.secondaryLoadsScheduled = YES;
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [weakSelf loadArchiveFolder];
+        [weakSelf refreshSavedMessagesInfo];
+    });
 }
 
 /// The main list never receives archive-only chats from getChats(chatListMain),
@@ -258,18 +285,24 @@
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
     self.navigationController.navigationBar.prefersLargeTitles = YES;
-    [self reloadUI];
+    [self reloadUIImmediately];
     if (!self.didLoadOnce) {
         self.didLoadOnce = YES;
     }
 }
 
 - (void)loadChats {
+    if (self.loadingChats) {
+        return;
+    }
+    self.loadingChats = YES;
+    self.chatsLoadStart = CACurrentMediaTime();
     [self.spinner startAnimating];
     self.emptyLabel.hidden = YES;
     __weak typeof(self) weakSelf = self;
     [self.client loadChatListWithCompletion:^(NSArray<NSNumber *> *chatIds, NSDictionary *error) {
         dispatch_async(dispatch_get_main_queue(), ^{
+            weakSelf.loadingChats = NO;
             [weakSelf.spinner stopAnimating];
             [weakSelf.refreshControl endRefreshing];
             if (error != nil) {
@@ -280,6 +313,10 @@
                 [weakSelf reloadUI];
                 return;
             }
+            TGXLogLine(@"perf: getChats -> %lu ids in %.0f ms (launch +%.0f ms)",
+                       (unsigned long)chatIds.count,
+                       (CACurrentMediaTime() - weakSelf.chatsLoadStart) * 1000.0,
+                       TGLaunchElapsedMilliseconds());
             [weakSelf loadChatDictionaries:chatIds];
         });
     }];
@@ -290,6 +327,7 @@
         [self reloadUI];
         return;
     }
+    self.detailsLoadStart = CACurrentMediaTime();
     self.pendingChatLoads += (NSInteger)chatIds.count;
     __weak typeof(self) weakSelf = self;
     for (NSNumber *chatId in chatIds) {
@@ -301,6 +339,10 @@
                 weakSelf.pendingChatLoads -= 1;
                 if (weakSelf.pendingChatLoads <= 0) {
                     weakSelf.pendingChatLoads = 0;
+                    TGXLogLine(@"perf: %lu chat details loaded in %.0f ms (launch +%.0f ms)",
+                               (unsigned long)chatIds.count,
+                               (CACurrentMediaTime() - weakSelf.detailsLoadStart) * 1000.0,
+                               TGLaunchElapsedMilliseconds());
                     [weakSelf reloadUI];
                 }
             });
@@ -430,7 +472,21 @@
 
 #pragma mark - UI
 
+/// Coalesces bursts of TDLib updates into a single table reload on the next
+/// run loop; startup delivers hundreds of them at once.
 - (void)reloadUI {
+    if (self.reloadScheduled) {
+        return;
+    }
+    self.reloadScheduled = YES;
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        weakSelf.reloadScheduled = NO;
+        [weakSelf reloadUIImmediately];
+    });
+}
+
+- (void)reloadUIImmediately {
     NSMutableArray<TGChat *> *visible = [NSMutableArray array];
     NSMutableArray<TGChat *> *archived = [NSMutableArray array];
     for (TGChat *chat in self.chats.allValues) {

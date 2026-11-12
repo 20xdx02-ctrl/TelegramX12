@@ -241,6 +241,20 @@ static NSInteger const TGCacheMaxAvatars = 400;
     return result;
 }
 
+- (NSString *)placeholderAvatarPathForIdentifier:(int64_t)identifier {
+    if (identifier == 0) {
+        return nil;
+    }
+    __block NSString *result = nil;
+    dispatch_sync(self.cacheQueue, ^{
+        NSString *path = [self filePathForAvatarIdentifier:identifier];
+        if ([[NSFileManager defaultManager] fileExistsAtPath:path]) {
+            result = path;
+        }
+    });
+    return result;
+}
+
 - (void)storeAvatarFromPath:(NSString *)path
                  identifier:(int64_t)identifier
                      fileId:(int32_t)fileId {
@@ -263,6 +277,8 @@ static NSInteger const TGCacheMaxAvatars = 400;
             return;
         }
         [[NSString stringWithFormat:@"%d", fileId] writeToFile:sidecar atomically:YES encoding:NSUTF8StringEncoding error:NULL];
+        // Refresh the LRU stamp; copied files can inherit the source mtime.
+        [fileManager setAttributes:@{ NSFileModificationDate: [NSDate date] } ofItemAtPath:destination error:NULL];
         [self pruneAvatarsLocked];
     });
 }
