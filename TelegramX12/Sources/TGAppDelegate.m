@@ -15,6 +15,9 @@
 @property (nonatomic, strong) UISplitViewController *splitViewController;
 @property (nonatomic, weak) TGLoginViewController *loginViewController;
 @property (nonatomic) BOOL readyScreenShown;
+/// True when a stored TDLib session existed at launch: transient
+/// authorization states must not replace the chat list with the login screen.
+@property (nonatomic) BOOL launchHadCachedSession;
 @end
 
 @implementation TGAppDelegate
@@ -40,6 +43,7 @@
     // login/loading screen flash while TDLib re-authorizes in the background.
     // Fresh installs still start on the login screen.
     BOOL cachedSession = [self.client hasCachedSession];
+    self.launchHadCachedSession = cachedSession;
     if (cachedSession) {
         [self showChatsAnimated:NO];
     } else {
@@ -296,6 +300,13 @@
         // Swap instantly: the animated cross-dissolve reads as a loading screen.
         [self showChatsAnimated:NO];
         [self notifyAuthorizationReady];
+        return;
+    }
+
+    // TDLib re-opens the local database with this transient state on every
+    // launch. With a cached session the chat list is already on screen — do
+    // not swap it for the login screen just to swap back a second later.
+    if ([type isEqualToString:@"authorizationStateWaitTdlibParameters"] && self.launchHadCachedSession) {
         return;
     }
 
