@@ -3,6 +3,7 @@
 #import "TGAvatarView.h"
 #import "TGCache.h"
 #import "TGChatPickerViewController.h"
+#import "TGGalleryPickerViewController.h"
 #import "TGInputBar.h"
 #import "TGLog.h"
 #import "TGMessageCell.h"
@@ -1408,19 +1409,70 @@
                              onReaction:nil
                                onAction:^(TGMessageContextAction action) {
         dispatch_async(dispatch_get_main_queue(), ^{
+            if (action == TGMessageContextActionGallery) {
+                [weakSelf presentGalleryPicker];
+                return;
+            }
+            if (action != TGMessageContextActionCamera) {
+                return;
+            }
             UIImagePickerController *picker = [[UIImagePickerController alloc] init];
             picker.delegate = weakSelf;
-            switch (action) {
-                case TGMessageContextActionGallery:
-                    picker.sourceType = UIImagePickerControllerSourceTypePhotoLibrary;
-                    break;
-                case TGMessageContextActionCamera:
-                    picker.sourceType = UIImagePickerControllerSourceTypeCamera;
-                    break;
-                default:
-                    return;
-            }
+            picker.sourceType = UIImagePickerControllerSourceTypeCamera;
             [weakSelf presentViewController:picker animated:YES completion:nil];
+        });
+    }];
+}
+
+/// Photo-library picker with multi-select (UIImagePickerController cannot do
+/// that on iOS 12). Selected photos come back as JPEG files and go out as one
+/// album; a single photo takes the regular sendMessage path.
+- (void)presentGalleryPicker {
+    if (self.presentedViewController != nil) {
+        return;
+    }
+    TGGalleryPickerViewController *gallery = [[TGGalleryPickerViewController alloc] initWithMaxSelection:10];
+    __weak typeof(self) weakSelf = self;
+    gallery.onSend = ^(NSArray<NSString *> *filePaths) {
+        [weakSelf sendPhotoAlbumFromPaths:filePaths];
+    };
+    UINavigationController *navigation = [[UINavigationController alloc] initWithRootViewController:gallery];
+    navigation.modalPresentationStyle = UIModalPresentationFullScreen;
+    [self presentViewController:navigation animated:YES completion:nil];
+}
+
+- (void)sendPhotoAlbumFromPaths:(NSArray<NSString *> *)paths {
+    if (paths.count == 0) {
+        return;
+    }
+    __weak typeof(self) weakSelf = self;
+    [self.client sendPhotoAlbumAtPaths:paths toChat:self.chatId completion:^(NSArray<NSDictionary *> *messages, NSDictionary *error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (messages.count == 0) {
+                NSString *messageText = TGStringValue(error[@"message"]);
+                if (messageText.length == 0) {
+                    messageText = @"Nie udało się wysłać zdjęć.";
+                }
+                UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Błąd wysyłania"
+                                                                                message:messageText
+                                                                         preferredStyle:UIAlertControllerStyleAlert];
+                [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+                [weakSelf presentViewController:alert animated:YES completion:nil];
+                return;
+            }
+            TGMessage *lastMessage = nil;
+            for (NSDictionary *dictionary in messages) {
+                [weakSelf upsertMessageDictionary:dictionary scrollToBottom:NO forceScroll:NO];
+                lastMessage = [TGMessage messageWithDictionary:dictionary];
+            }
+            // One scroll after the whole album so the list does not jump per
+            // message; the album bubbles stay grouped.
+            if (lastMessage != nil) {
+                [weakSelf scrollToBottomAnimated:YES];
+            }
+            for (NSString *path in paths) {
+                [[NSFileManager defaultManager] removeItemAtPath:path error:NULL];
+            }
         });
     }];
 }

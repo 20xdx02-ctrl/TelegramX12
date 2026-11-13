@@ -76,6 +76,9 @@ replyToMessageId:(int64_t)replyToMessageId
                  toChat:(int64_t)chatId
                 caption:(nullable NSString *)caption
              completion:(nullable TGMessageBlock)completion;
+- (void)sendPhotoAlbumAtPaths:(NSArray<NSString *> *)paths
+                       toChat:(int64_t)chatId
+                   completion:(nullable void (^)(NSArray<NSDictionary *> *messages, NSDictionary *error))completion;
 /// Loads sticker picker sections: "Ulubione", "Ostatnie" and installed packs.
 /// Each section is a dictionary with "title" (NSString) and "stickers" (array
 /// of TDLib `sticker` objects).

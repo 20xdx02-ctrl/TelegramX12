@@ -695,17 +695,8 @@ replyToMessageId:(int64_t)replyToMessageId
     }];
 }
 
-- (void)sendPhotoAtPath:(NSString *)path
-                 toChat:(int64_t)chatId
-                caption:(nullable NSString *)caption
-             completion:(nullable TGMessageBlock)completion {
-    if (path.length == 0) {
-        if (completion != nil) {
-            completion(nil, @{@"@type": @"error", @"message": @"Brak ścieżki pliku"});
-        }
-        return;
-    }
-    NSDictionary *content = @{
+static NSDictionary *TGInputMessagePhoto(NSString *path, NSString *caption) {
+    return @{
         @"@type": @"inputMessagePhoto",
         // TDLib 1.8 wraps the file in an inputPhoto struct: a bare
         // inputFileLocal is ignored ("InputFile is not specified").
@@ -723,6 +714,19 @@ replyToMessageId:(int64_t)replyToMessageId
             @"entities": @[]
         }
     };
+}
+
+- (void)sendPhotoAtPath:(NSString *)path
+                 toChat:(int64_t)chatId
+                caption:(nullable NSString *)caption
+             completion:(nullable TGMessageBlock)completion {
+    if (path.length == 0) {
+        if (completion != nil) {
+            completion(nil, @{@"@type": @"error", @"message": @"Brak ścieżki pliku"});
+        }
+        return;
+    }
+    NSDictionary *content = TGInputMessagePhoto(path, caption);
     NSDictionary *request = @{
         @"@type": @"sendMessage",
         @"chat_id": @(chatId),
@@ -738,6 +742,83 @@ replyToMessageId:(int64_t)replyToMessageId
         if (completion != nil) {
             completion(nil, response);
         }
+    }];
+}
+
+- (void)sendPhotoAlbumAtPaths:(NSArray<NSString *> *)paths
+                       toChat:(int64_t)chatId
+                   completion:(void (^)(NSArray<NSDictionary *> *messages, NSDictionary *error))completion {
+    NSMutableArray<NSString *> *validPaths = [NSMutableArray array];
+    for (NSString *path in paths) {
+        if ([path isKindOfClass:[NSString class]] && path.length > 0) {
+            [validPaths addObject:path];
+        }
+    }
+    if (validPaths.count == 0) {
+        if (completion != nil) {
+            completion(@[], @{@"@type": @"error", @"message": @"Brak zdjęć do wysłania"});
+        }
+        return;
+    }
+    if (validPaths.count == 1) {
+        [self sendPhotoAtPath:validPaths.firstObject toChat:chatId caption:nil completion:^(NSDictionary *message, NSDictionary *error) {
+            if (completion != nil) {
+                completion(message != nil ? @[message] : @[], error);
+            }
+        }];
+        return;
+    }
+
+    NSMutableArray<NSDictionary *> *contents = [NSMutableArray arrayWithCapacity:validPaths.count];
+    for (NSString *path in validPaths) {
+        [contents addObject:TGInputMessagePhoto(path, nil)];
+    }
+    NSDictionary *request = @{
+        @"@type": @"sendMessageAlbum",
+        @"chat_id": @(chatId),
+        @"input_message_contents": contents
+    };
+    __weak typeof(self) weakSelf = self;
+    [self sendRequest:request completion:^(NSDictionary *response) {
+        if ([TGStringValue(response[@"@type"]) isEqualToString:@"messages"]) {
+            NSArray *messages = response[@"messages"];
+            if (completion != nil) {
+                completion([messages isKindOfClass:[NSArray class]] ? messages : @[], nil);
+            }
+            return;
+        }
+        // Schema differences between TDLib builds must not break sending:
+        // fall back to one message per photo.
+        TGXLogLine(@"sendMessageAlbum failed, sending photos one by one: %@", response);
+        [weakSelf sendPhotosSequentially:validPaths index:0 chatId:chatId collected:[NSMutableArray array] lastError:response completion:completion];
+    }];
+}
+
+- (void)sendPhotosSequentially:(NSArray<NSString *> *)paths
+                         index:(NSUInteger)index
+                        chatId:(int64_t)chatId
+                     collected:(NSMutableArray<NSDictionary *> *)collected
+                     lastError:(NSDictionary *)lastError
+                    completion:(void (^)(NSArray<NSDictionary *> *, NSDictionary *))completion {
+    if (index >= paths.count) {
+        if (completion != nil) {
+            completion(collected, collected.count > 0 ? nil : lastError);
+        }
+        return;
+    }
+    __weak typeof(self) weakSelf = self;
+    [self sendPhotoAtPath:paths[index] toChat:chatId caption:nil completion:^(NSDictionary *message, NSDictionary *error) {
+        if (message != nil) {
+            [collected addObject:message];
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [weakSelf sendPhotosSequentially:paths
+                                       index:index + 1
+                                      chatId:chatId
+                                   collected:collected
+                                   lastError:(error != nil ? error : lastError)
+                                  completion:completion];
+        });
     }];
 }
 
