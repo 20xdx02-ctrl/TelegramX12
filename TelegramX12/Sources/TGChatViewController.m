@@ -57,6 +57,9 @@
 @property (nonatomic) BOOL reachedOldestMessage;
 @property (nonatomic) NSInteger initialRetryCount;
 @property (nonatomic) BOOL didInitialLoad;
+/// True while picked photos are being uploaded/sent; suppresses a second
+/// gallery send while the first is in flight.
+@property (nonatomic) BOOL sendingPhotos;
 /// True while cached messages are being restored (skips cache write-back).
 @property (nonatomic) BOOL restoringCache;
 @property (nonatomic) CFTimeInterval historyLoadStart;
@@ -1442,12 +1445,19 @@
 }
 
 - (void)sendPhotoAlbumFromPaths:(NSArray<NSString *> *)paths {
-    if (paths.count == 0) {
+    if (paths.count == 0 || self.sendingPhotos) {
         return;
     }
+    self.sendingPhotos = YES;
+    [self.spinner startAnimating];
     __weak typeof(self) weakSelf = self;
     [self.client sendPhotoAlbumAtPaths:paths toChat:self.chatId completion:^(NSArray<NSDictionary *> *messages, NSDictionary *error) {
         dispatch_async(dispatch_get_main_queue(), ^{
+            weakSelf.sendingPhotos = NO;
+            [weakSelf.spinner stopAnimating];
+            for (NSString *path in paths) {
+                [[NSFileManager defaultManager] removeItemAtPath:path error:NULL];
+            }
             if (messages.count == 0) {
                 NSString *messageText = TGStringValue(error[@"message"]);
                 if (messageText.length == 0) {
@@ -1469,9 +1479,6 @@
             // message; the album bubbles stay grouped.
             if (lastMessage != nil) {
                 [weakSelf scrollToBottomAnimated:YES];
-            }
-            for (NSString *path in paths) {
-                [[NSFileManager defaultManager] removeItemAtPath:path error:NULL];
             }
         });
     }];

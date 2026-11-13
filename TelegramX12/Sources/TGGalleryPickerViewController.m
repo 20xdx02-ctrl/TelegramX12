@@ -84,6 +84,19 @@
 
 static NSString *const TGGalleryCellIdentifier = @"TGGalleryCell";
 
+/// Re-encoding to JPEG drops EXIF orientation, so draw portrait/landscape
+/// originals upright first; otherwise camera photos arrive rotated.
+static UIImage *TGNormalizedImage(UIImage *image) {
+    if (image.imageOrientation == UIImageOrientationUp) {
+        return image;
+    }
+    UIGraphicsBeginImageContextWithOptions(image.size, NO, 1.0);
+    [image drawInRect:CGRectMake(0.0, 0.0, image.size.width, image.size.height)];
+    UIImage *normalized = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    return normalized ?: image;
+}
+
 @implementation TGGalleryPickerViewController
 
 - (instancetype)initWithMaxSelection:(NSInteger)maxSelection {
@@ -339,7 +352,7 @@ static NSString *const TGGalleryCellIdentifier = @"TGGalleryCell";
                 if (image == nil) {
                     continue;
                 }
-                NSData *jpeg = UIImageJPEGRepresentation(image, 0.9);
+                NSData *jpeg = UIImageJPEGRepresentation(TGNormalizedImage(image), 0.9);
                 if (jpeg.length == 0) {
                     continue;
                 }
