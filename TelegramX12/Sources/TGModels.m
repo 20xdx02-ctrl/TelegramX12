@@ -66,6 +66,89 @@ NSString *TGDurationString(int32_t seconds) {
     return [NSString stringWithFormat:@"%d:%02d", m, s];
 }
 
+static NSString *TGLocalPathFromFile(NSDictionary *file);
+
+static NSArray<NSDictionary *> *TGEntitiesFromFormattedText(id formattedText) {
+    if (![formattedText isKindOfClass:[NSDictionary class]]) {
+        return nil;
+    }
+    id entities = ((NSDictionary *)formattedText)[@"entities"];
+    if (![entities isKindOfClass:[NSArray class]] || ((NSArray *)entities).count == 0) {
+        return nil;
+    }
+    return (NSArray<NSDictionary *> *)entities;
+}
+
+static NSArray<NSDictionary *> *TGCaptionEntitiesFromContent(NSDictionary *content) {
+    return TGEntitiesFromFormattedText(content[@"caption"]);
+}
+
+/// Medium-size photo inside a photo object (used for link previews).
+static NSDictionary *TGBestPhotoSize(NSDictionary *photo) {
+    if (![photo isKindOfClass:[NSDictionary class]]) {
+        return nil;
+    }
+    NSArray *sizes = photo[@"sizes"];
+    if (![sizes isKindOfClass:[NSArray class]] || sizes.count == 0) {
+        return nil;
+    }
+    NSDictionary *chosen = sizes.lastObject;
+    for (NSDictionary *size in sizes) {
+        if (![size isKindOfClass:[NSDictionary class]]) {
+            continue;
+        }
+        NSString *type = TGStringValue(size[@"type"]);
+        if ([type isEqualToString:@"x"] || [type isEqualToString:@"y"]) {
+            chosen = size;
+        }
+    }
+    return chosen;
+}
+
+static NSDictionary *TGLinkPreviewPhoto(NSDictionary *preview) {
+    NSDictionary *type = preview[@"type"];
+    if ([type isKindOfClass:[NSDictionary class]]) {
+        for (NSString *key in @[@"photo", @"cover", @"thumbnail"]) {
+            NSDictionary *photo = type[key];
+            if ([photo isKindOfClass:[NSDictionary class]]) {
+                return photo;
+            }
+        }
+    }
+    NSDictionary *legacyPhoto = preview[@"photo"];
+    return [legacyPhoto isKindOfClass:[NSDictionary class]] ? legacyPhoto : nil;
+}
+
+static void TGApplyLinkPreview(TGMessage *message, NSDictionary *content) {
+    NSDictionary *preview = content[@"link_preview"];
+    if (![preview isKindOfClass:[NSDictionary class]]) {
+        // TDLib used `web_page` before the rename; keep reading cached payloads.
+        preview = content[@"web_page"];
+    }
+    if (![preview isKindOfClass:[NSDictionary class]]) {
+        return;
+    }
+
+    message.linkPreviewURL = TGStringValue(preview[@"url"]);
+    message.linkPreviewDisplayURL = TGStringValue(preview[@"display_url"]);
+    message.linkPreviewSiteName = TGStringValue(preview[@"site_name"]);
+    message.linkPreviewTitle = TGStringValue(preview[@"title"]);
+
+    id description = preview[@"description"];
+    if ([description isKindOfClass:[NSDictionary class]]) {
+        message.linkPreviewDescription = TGStringValue(((NSDictionary *)description)[@"text"]);
+    } else if ([description isKindOfClass:[NSString class]]) {
+        message.linkPreviewDescription = (NSString *)description;
+    }
+
+    NSDictionary *size = TGBestPhotoSize(TGLinkPreviewPhoto(preview));
+    if (size != nil) {
+        NSDictionary *file = size[@"photo"];
+        message.linkPreviewImageFileId = TGInt32Value(file[@"id"]);
+        message.linkPreviewImageLocalPath = TGLocalPathFromFile(file);
+    }
+}
+
 static NSString *TGCaptionFromContent(NSDictionary *content) {
     id caption = content[@"caption"];
     if ([caption isKindOfClass:[NSDictionary class]]) {
@@ -460,6 +543,13 @@ NSString *TGMessagePreviewText(NSDictionary *content) {
 
 @implementation TGMessage
 
+- (BOOL)hasLinkPreview {
+    return self.linkPreviewURL.length > 0 &&
+           (self.linkPreviewTitle.length > 0 ||
+            self.linkPreviewSiteName.length > 0 ||
+            self.linkPreviewDescription.length > 0);
+}
+
 + (instancetype)messageWithDictionary:(NSDictionary *)dictionary {
     TGMessage *message = [[TGMessage alloc] init];
     message.text = @"";
@@ -520,6 +610,25 @@ NSString *TGMessagePreviewText(NSDictionary *content) {
         self.contentType = TGMessageContentType(contentDict);
         self.text = TGMessagePreviewText(contentDict);
         self.isService = TGMessageContentIsService(contentDict);
+
+        self.textEntities = nil;
+        self.captionEntities = nil;
+        self.linkPreviewURL = nil;
+        self.linkPreviewDisplayURL = nil;
+        self.linkPreviewSiteName = nil;
+        self.linkPreviewTitle = nil;
+        self.linkPreviewDescription = nil;
+        self.linkPreviewImageFileId = 0;
+        self.linkPreviewImageLocalPath = nil;
+
+        if (!self.isService) {
+            id textObject = contentDict[@"text"];
+            self.textEntities = TGEntitiesFromFormattedText(textObject);
+            self.captionEntities = TGCaptionEntitiesFromContent(contentDict);
+            if ([self.contentType isEqualToString:@"messageText"]) {
+                TGApplyLinkPreview(self, contentDict);
+            }
+        }
 
         if (self.isService) {
             self.messageType = TGMessageTypeService;

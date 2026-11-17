@@ -2,6 +2,10 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+/// Attribute marking a hidden "spoiler" run. Its presence means the text is
+/// currently covered and can be revealed by a tap.
+FOUNDATION_EXPORT NSAttributedStringKey const TGSpoilerAttributeName;
+
 @interface UIColor (TelegramX12)
 + (UIColor *)tg_colorWithHex:(uint32_t)hex;
 + (UIColor *)tg_colorWithHex:(uint32_t)hex alpha:(CGFloat)alpha;
@@ -38,6 +42,15 @@ NS_ASSUME_NONNULL_BEGIN
 + (UIColor *)outgoingLinkColor;
 /// Builds message text with URLs/emails highlighted (and tappable).
 + (NSAttributedString *)attributedStringForText:(NSString *)text
+                                           font:(UIFont *)font
+                                          color:(UIColor *)color
+                                      linkColor:(UIColor *)linkColor;
+/// Builds text from TDLib `formattedText.entities` (bold, italic, underline,
+/// strikethrough, code/pre, blockquote, spoiler, text links, mentions, …).
+/// Ranges tagged with `TGSpoilerAttributeName` are covered; tapping them is
+/// handled by the cell, which rebuilds the string with the spoiler visible.
++ (NSAttributedString *)attributedStringForText:(NSString *)text
+                                       entities:(nullable NSArray<NSDictionary *> *)entities
                                            font:(UIFont *)font
                                           color:(UIColor *)color
                                       linkColor:(UIColor *)linkColor;

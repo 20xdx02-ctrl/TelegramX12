@@ -75,6 +75,8 @@ FOUNDATION_EXPORT NSString *TGDurationString(int32_t seconds);
 @property (nonatomic) BOOL isOutgoing;
 @property (nonatomic) BOOL isRead;
 @property (nonatomic, copy) NSString *text;
+/// TDLib `formattedText.entities` for `text` (bold, italic, links, code, …).
+@property (nonatomic, strong, nullable) NSArray<NSDictionary *> *textEntities;
 @property (nonatomic, copy) NSString *contentType;
 @property (nonatomic) TGMessageType messageType;
 @property (nonatomic) BOOL isService;
@@ -120,6 +122,8 @@ FOUNDATION_EXPORT NSString *TGDurationString(int32_t seconds);
 @property (nonatomic) CGFloat mediaHeight;
 @property (nonatomic) int32_t mediaDuration;
 @property (nonatomic, copy, nullable) NSString *mediaCaption;
+/// Entities for `mediaCaption` (same TDLib `textEntity` shape as `textEntities`).
+@property (nonatomic, strong, nullable) NSArray<NSDictionary *> *captionEntities;
 @property (nonatomic, copy, nullable) NSString *mediaFileName;
 @property (nonatomic) int64_t mediaFileSize;
 @property (nonatomic, copy, nullable) NSString *stickerEmoji;
@@ -137,6 +141,18 @@ FOUNDATION_EXPORT NSString *TGDurationString(int32_t seconds);
 /// Array of NSDictionary: @{ @"emoji": NSString, @"count": NSNumber, @"chosen": NSNumber }
 /// Populated from message.interaction_info.reactions.reactions
 @property (nonatomic, strong, nullable) NSArray<NSDictionary *> *reactions;
+
+// Link preview (`messageText.link_preview`; older TDLib: `web_page`).
+@property (nonatomic, copy, nullable) NSString *linkPreviewURL;
+@property (nonatomic, copy, nullable) NSString *linkPreviewDisplayURL;
+@property (nonatomic, copy, nullable) NSString *linkPreviewSiteName;
+@property (nonatomic, copy, nullable) NSString *linkPreviewTitle;
+@property (nonatomic, copy, nullable) NSString *linkPreviewDescription;
+@property (nonatomic) int32_t linkPreviewImageFileId;
+@property (nonatomic, copy, nullable) NSString *linkPreviewImageLocalPath;
+
+/// YES when there is a preview card worth rendering.
+@property (nonatomic, readonly) BOOL hasLinkPreview;
 
 + (instancetype)messageWithDictionary:(NSDictionary *)dictionary;
 - (void)updateWithDictionary:(NSDictionary *)dictionary;

@@ -18,6 +18,11 @@ static const CGFloat TGMessageCellAvatarSlot = TGMessageCellAvatarSize + TGMessa
 static const CGFloat TGMessageCellReplyBlockHeight = 38.0;
 static const CGFloat TGMessageCellForwardLineHeight = 17.0;
 
+static const CGFloat TGMessageCellLinkPreviewPadding = 8.0;
+static const CGFloat TGMessageCellLinkPreviewThumbSize = 52.0;
+static const CGFloat TGMessageCellLinkPreviewGap = 8.0;
+static const CGFloat TGMessageCellLinkPreviewSiteHeight = 14.0;
+
 @interface TGMessageCell () <UIGestureRecognizerDelegate>
 
 @property (nonatomic, strong) UIView *bubbleView;
@@ -47,6 +52,19 @@ static const CGFloat TGMessageCellForwardLineHeight = 17.0;
 @property (nonatomic, strong) UIView *playButtonView;
 @property (nonatomic, strong) UILabel *playTriangleLabel;
 @property (nonatomic, strong) UILabel *captionLabel;
+
+// Link preview card (messageText.link_preview)
+@property (nonatomic, strong) UIView *linkPreviewContainer;
+@property (nonatomic, strong) UIImageView *linkPreviewImageView;
+@property (nonatomic, strong) UILabel *linkPreviewSiteLabel;
+@property (nonatomic, strong) UILabel *linkPreviewTitleLabel;
+@property (nonatomic, strong) UILabel *linkPreviewDescriptionLabel;
+
+// Spoilers are rendered covered; tapping the label reveals and rebuilds it.
+@property (nonatomic, strong) NSArray<NSValue *> *bodySpoilerRanges;
+@property (nonatomic, strong) NSArray<NSValue *> *captionSpoilerRanges;
+@property (nonatomic) BOOL bodySpoilersRevealed;
+@property (nonatomic) BOOL captionSpoilersRevealed;
 
 // Sticker view
 @property (nonatomic, strong) UIImageView *stickerImageView;
@@ -78,6 +96,37 @@ static const CGFloat TGMessageCellForwardLineHeight = 17.0;
 @property (nonatomic, strong) NSMutableArray<UIButton *> *reactionButtons;
 
 @end
+
+static UIFont *TGLinkPreviewTitleFont(void) {
+    return [TGTheme semiboldFontOfSize:14.0];
+}
+
+static UIFont *TGLinkPreviewDescriptionFont(void) {
+    return [TGTheme regularFontOfSize:12.0];
+}
+
+static NSString *TGLinkPreviewSiteTextForMessage(TGMessage *message) {
+    NSString *site = message.linkPreviewSiteName;
+    if (site.length == 0) {
+        NSString *candidate = message.linkPreviewDisplayURL.length > 0 ? message.linkPreviewDisplayURL : message.linkPreviewURL;
+        NSURL *url = [NSURL URLWithString:candidate];
+        site = url.host.length > 0 ? url.host : candidate;
+    }
+    return site ?: @"";
+}
+
+/// Height of text clamped to `maxLines`, using the same wrapping as UILabel.
+static CGFloat TGMeasuredTextHeight(NSString *text, UIFont *font, CGFloat width, NSInteger maxLines) {
+    if (text.length == 0 || width <= 0.0) {
+        return 0.0;
+    }
+    CGRect rect = [text boundingRectWithSize:CGSizeMake(width, CGFLOAT_MAX)
+                                     options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
+                                  attributes:@{NSFontAttributeName: font}
+                                     context:nil];
+    CGFloat lineHeight = ceil(font.lineHeight);
+    return MIN(MAX(lineHeight, ceil(CGRectGetHeight(rect))), lineHeight * maxLines);
+}
 
 @implementation TGMessageCell
 
@@ -219,6 +268,41 @@ static const CGFloat TGMessageCellForwardLineHeight = 17.0;
         _captionLinkTap.delegate = self;
         [_captionLabel addGestureRecognizer:_captionLinkTap];
         _captionLabel.userInteractionEnabled = YES;
+
+        // Link preview card inside the bubble.
+        _linkPreviewContainer = [[UIView alloc] initWithFrame:CGRectZero];
+        _linkPreviewContainer.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.06];
+        _linkPreviewContainer.layer.cornerRadius = 10.0;
+        _linkPreviewContainer.clipsToBounds = YES;
+        _linkPreviewContainer.hidden = YES;
+        [_bubbleView addSubview:_linkPreviewContainer];
+
+        _linkPreviewImageView = [[UIImageView alloc] initWithFrame:CGRectZero];
+        _linkPreviewImageView.contentMode = UIViewContentModeScaleAspectFill;
+        _linkPreviewImageView.clipsToBounds = YES;
+        _linkPreviewImageView.layer.cornerRadius = 6.0;
+        _linkPreviewImageView.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.08];
+        [_linkPreviewContainer addSubview:_linkPreviewImageView];
+
+        _linkPreviewSiteLabel = [[UILabel alloc] initWithFrame:CGRectZero];
+        _linkPreviewSiteLabel.font = [TGTheme semiboldFontOfSize:11.0];
+        _linkPreviewSiteLabel.textColor = [TGTheme secondaryTextColor];
+        _linkPreviewSiteLabel.numberOfLines = 1;
+        [_linkPreviewContainer addSubview:_linkPreviewSiteLabel];
+
+        _linkPreviewTitleLabel = [[UILabel alloc] initWithFrame:CGRectZero];
+        _linkPreviewTitleLabel.font = TGLinkPreviewTitleFont();
+        _linkPreviewTitleLabel.numberOfLines = 2;
+        [_linkPreviewContainer addSubview:_linkPreviewTitleLabel];
+
+        _linkPreviewDescriptionLabel = [[UILabel alloc] initWithFrame:CGRectZero];
+        _linkPreviewDescriptionLabel.font = TGLinkPreviewDescriptionFont();
+        _linkPreviewDescriptionLabel.textColor = [TGTheme secondaryTextColor];
+        _linkPreviewDescriptionLabel.numberOfLines = 2;
+        [_linkPreviewContainer addSubview:_linkPreviewDescriptionLabel];
+
+        UITapGestureRecognizer *previewTap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(handleLinkPreviewTap)];
+        [_linkPreviewContainer addGestureRecognizer:previewTap];
 
         // Document / Audio card
         _docIconView = [[UIView alloc] initWithFrame:CGRectZero];
@@ -367,10 +451,10 @@ static const CGFloat TGMessageCellForwardLineHeight = 17.0;
 
 #pragma mark - Links
 
-- (NSURL *)linkAtPoint:(CGPoint)point inLabel:(UILabel *)label {
+- (NSUInteger)characterIndexAtPoint:(CGPoint)point inLabel:(UILabel *)label {
     NSAttributedString *text = label.attributedText;
     if (text.length == 0 || label.bounds.size.width <= 0) {
-        return nil;
+        return NSNotFound;
     }
     NSTextStorage *storage = [[NSTextStorage alloc] initWithAttributedString:text];
     NSLayoutManager *layoutManager = [[NSLayoutManager alloc] init];
@@ -386,18 +470,24 @@ static const CGFloat TGMessageCellForwardLineHeight = 17.0;
     adjusted.y -= MAX(0.0, (CGRectGetHeight(label.bounds) - CGRectGetHeight(usedRect)) / 2.0);
     adjusted.x -= MAX(0.0, (CGRectGetWidth(label.bounds) - CGRectGetWidth(usedRect)) / 2.0);
     if (adjusted.x < 0.0 || adjusted.y < 0.0) {
-        return nil;
+        return NSNotFound;
     }
     NSUInteger glyphIndex = [layoutManager glyphIndexForPoint:adjusted
                                               inTextContainer:container
                                    fractionOfDistanceThroughGlyph:NULL];
     if (glyphIndex >= layoutManager.numberOfGlyphs) {
-        return nil;
+        return NSNotFound;
     }
     NSUInteger charIndex = [layoutManager characterIndexForGlyphAtIndex:glyphIndex];
-    if (charIndex >= text.length) {
+    return charIndex < text.length ? charIndex : NSNotFound;
+}
+
+- (NSURL *)linkAtPoint:(CGPoint)point inLabel:(UILabel *)label {
+    NSUInteger charIndex = [self characterIndexAtPoint:point inLabel:label];
+    if (charIndex == NSNotFound) {
         return nil;
     }
+    NSAttributedString *text = label.attributedText;
     id link = [text attribute:NSLinkAttributeName atIndex:charIndex effectiveRange:NULL];
     if ([link isKindOfClass:[NSURL class]]) {
         return (NSURL *)link;
@@ -408,12 +498,48 @@ static const CGFloat TGMessageCellForwardLineHeight = 17.0;
     return nil;
 }
 
+- (NSArray<NSValue *> *)spoilerRangesForLabel:(UILabel *)label {
+    return label == self.bodyLabel ? self.bodySpoilerRanges : self.captionSpoilerRanges;
+}
+
+- (BOOL)pointHitsSpoiler:(CGPoint)point inLabel:(UILabel *)label {
+    NSUInteger charIndex = [self characterIndexAtPoint:point inLabel:label];
+    if (charIndex == NSNotFound) {
+        return NO;
+    }
+    for (NSValue *value in [self spoilerRangesForLabel:label]) {
+        if (NSLocationInRange(charIndex, value.rangeValue)) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
+- (BOOL)revealSpoilerAtPoint:(CGPoint)point inLabel:(UILabel *)label {
+    if (![self pointHitsSpoiler:point inLabel:label]) {
+        return NO;
+    }
+    if (label == self.bodyLabel) {
+        self.bodySpoilersRevealed = YES;
+        [self updateBodyText];
+    } else {
+        self.captionSpoilersRevealed = YES;
+        [self updateCaptionText];
+    }
+    [self setNeedsLayout];
+    return YES;
+}
+
 - (void)handleTextLinkTap:(UITapGestureRecognizer *)recognizer {
     UILabel *label = (UILabel *)recognizer.view;
     if (![label isKindOfClass:[UILabel class]]) {
         return;
     }
-    NSURL *url = [self linkAtPoint:[recognizer locationInView:label] inLabel:label];
+    CGPoint point = [recognizer locationInView:label];
+    if ([self revealSpoilerAtPoint:point inLabel:label]) {
+        return;
+    }
+    NSURL *url = [self linkAtPoint:point inLabel:label];
     if (url != nil && self.onLinkTap != nil) {
         self.onLinkTap(url);
     }
@@ -422,7 +548,8 @@ static const CGFloat TGMessageCellForwardLineHeight = 17.0;
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gestureRecognizer {
     if (gestureRecognizer == self.bodyLinkTap || gestureRecognizer == self.captionLinkTap) {
         UILabel *label = (UILabel *)gestureRecognizer.view;
-        return [self linkAtPoint:[gestureRecognizer locationInView:label] inLabel:label] != nil;
+        CGPoint point = [gestureRecognizer locationInView:label];
+        return [self linkAtPoint:point inLabel:label] != nil || [self pointHitsSpoiler:point inLabel:label];
     }
     return YES;
 }
@@ -478,6 +605,15 @@ static const CGFloat TGMessageCellForwardLineHeight = 17.0;
     self.playButtonView.hidden = YES;
     self.bodyLabel.text = nil;
     self.captionLabel.text = nil;
+    self.bodySpoilerRanges = nil;
+    self.captionSpoilerRanges = nil;
+    self.bodySpoilersRevealed = NO;
+    self.captionSpoilersRevealed = NO;
+    self.linkPreviewContainer.hidden = YES;
+    self.linkPreviewImageView.image = nil;
+    self.linkPreviewSiteLabel.text = nil;
+    self.linkPreviewTitleLabel.text = nil;
+    self.linkPreviewDescriptionLabel.text = nil;
     self.senderLabel.text = nil;
     self.timeLabel.text = nil;
     self.serviceLabel.text = nil;
@@ -571,6 +707,50 @@ static const CGFloat TGMessageCellForwardLineHeight = 17.0;
     return CGSizeMake(MIN(maxWidth, ceil(CGRectGetWidth(rect))), MAX(1.0, ceil(CGRectGetHeight(rect))));
 }
 
++ (CGSize)textSizeForAttributedString:(NSAttributedString *)text maxWidth:(CGFloat)maxWidth {
+    if (text.length == 0) return CGSizeZero;
+    CGRect rect = [text boundingRectWithSize:CGSizeMake(maxWidth, CGFLOAT_MAX)
+                                     options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
+                                     context:nil];
+    return CGSizeMake(MIN(maxWidth, ceil(CGRectGetWidth(rect))), MAX(1.0, ceil(CGRectGetHeight(rect))));
+}
+
+/// Text with TDLib entities applied, used for measuring (colors do not matter).
++ (NSAttributedString *)attributedTextForText:(NSString *)text entities:(NSArray<NSDictionary *> *)entities outgoing:(BOOL)outgoing {
+    UIColor *color = outgoing ? [UIColor whiteColor] : [UIColor blackColor];
+    UIColor *linkColor = outgoing ? [TGTheme outgoingLinkColor] : [TGTheme linkColor];
+    return [TGTheme attributedStringForText:text
+                                   entities:entities
+                                       font:[TGTheme regularFontOfSize:TGMessageCellTextSize]
+                                      color:color
+                                  linkColor:linkColor];
+}
+
++ (CGFloat)linkPreviewHeightForMessage:(TGMessage *)message maxWidth:(CGFloat)maxWidth {
+    if (!message.hasLinkPreview) {
+        return 0.0;
+    }
+    BOOL hasImage = message.linkPreviewImageFileId > 0 || message.linkPreviewImageLocalPath.length > 0;
+    CGFloat textWidth = maxWidth - TGMessageCellLinkPreviewPadding * 2.0;
+    if (hasImage) {
+        textWidth -= TGMessageCellLinkPreviewThumbSize + TGMessageCellLinkPreviewGap;
+    }
+    CGFloat textHeight = 0.0;
+    if (TGLinkPreviewSiteTextForMessage(message).length > 0) {
+        textHeight += TGMessageCellLinkPreviewSiteHeight + 1.0;
+    }
+    CGFloat titleHeight = TGMeasuredTextHeight(message.linkPreviewTitle, TGLinkPreviewTitleFont(), textWidth, 2);
+    if (titleHeight > 0.0) {
+        textHeight += titleHeight + (textHeight > 0.0 ? 1.0 : 0.0);
+    }
+    CGFloat descriptionHeight = TGMeasuredTextHeight(message.linkPreviewDescription, TGLinkPreviewDescriptionFont(), textWidth, 2);
+    if (descriptionHeight > 0.0) {
+        textHeight += descriptionHeight + (textHeight > 0.0 ? 2.0 : 0.0);
+    }
+    CGFloat contentHeight = hasImage ? MAX(TGMessageCellLinkPreviewThumbSize, textHeight) : textHeight;
+    return MAX(52.0, contentHeight + TGMessageCellLinkPreviewPadding * 2.0);
+}
+
 /// Extra vertical space consumed by the forward header and the reply quote
 /// strip above the message content.
 + (CGFloat)replyBlockHeightForMessage:(TGMessage *)message {
@@ -609,14 +789,19 @@ static const CGFloat TGMessageCellForwardLineHeight = 17.0;
     CGFloat contentHeight = 0.0;
     if (message.messageType == TGMessageTypeText || message.messageType == TGMessageTypeUnsupported) {
         NSString *txt = message.text.length > 0 ? message.text : @"Nieobsługiwana wiadomość";
-        CGSize sz = [self textSizeForString:txt maxWidth:maxTextWidth];
+        NSAttributedString *attributed = [self attributedTextForText:txt entities:message.textEntities outgoing:message.isOutgoing];
+        CGSize sz = [self textSizeForAttributedString:attributed maxWidth:maxTextWidth];
         contentHeight = sz.height;
+        if (message.messageType == TGMessageTypeText && message.hasLinkPreview) {
+            contentHeight += 6.0 + [self linkPreviewHeightForMessage:message maxWidth:maxTextWidth];
+        }
     } else {
         CGSize mediaSize = [self mediaSizeForMessage:message maxBubbleWidth:maxBubbleWidth];
         contentHeight = mediaSize.height;
 
         if (message.mediaCaption.length > 0) {
-            CGSize capSize = [self textSizeForString:message.mediaCaption maxWidth:maxTextWidth];
+            NSAttributedString *caption = [self attributedTextForText:message.mediaCaption entities:message.captionEntities outgoing:message.isOutgoing];
+            CGSize capSize = [self textSizeForAttributedString:caption maxWidth:maxTextWidth];
             contentHeight += 6.0 + capSize.height;
         }
     }
@@ -630,13 +815,153 @@ static const CGFloat TGMessageCellForwardLineHeight = 17.0;
 #pragma mark - Configuration
 
 /// Body/caption text with clickable links in Telegram-like colours.
-- (NSAttributedString *)attributedTextForString:(NSString *)text outgoing:(BOOL)outgoing {
+- (NSAttributedString *)attributedTextForString:(NSString *)text entities:(NSArray<NSDictionary *> *)entities outgoing:(BOOL)outgoing revealSpoilers:(BOOL)reveal {
+    NSArray<NSDictionary *> *effectiveEntities = entities;
+    if (reveal && entities.count > 0) {
+        NSMutableArray<NSDictionary *> *filtered = [NSMutableArray arrayWithCapacity:entities.count];
+        for (NSDictionary *entity in entities) {
+            NSDictionary *type = [entity isKindOfClass:[NSDictionary class]] ? entity[@"type"] : nil;
+            NSString *typeName = [type isKindOfClass:[NSDictionary class]] ? TGStringValue(type[@"@type"]) : @"";
+            if (![typeName isEqualToString:@"textEntityTypeSpoiler"]) {
+                [filtered addObject:entity];
+            }
+        }
+        effectiveEntities = filtered;
+    }
     UIColor *color = outgoing ? [UIColor whiteColor] : [UIColor blackColor];
     UIColor *linkColor = outgoing ? [TGTheme outgoingLinkColor] : [TGTheme linkColor];
     return [TGTheme attributedStringForText:text
+                                   entities:effectiveEntities
                                        font:[TGTheme regularFontOfSize:TGMessageCellTextSize]
                                       color:color
                                   linkColor:linkColor];
+}
+
+- (NSArray<NSValue *> *)spoilerRangesInAttributedString:(NSAttributedString *)attributed {
+    if (attributed.length == 0) {
+        return @[];
+    }
+    NSMutableArray<NSValue *> *ranges = [NSMutableArray array];
+    [attributed enumerateAttribute:TGSpoilerAttributeName
+                           inRange:NSMakeRange(0, attributed.length)
+                           options:0
+                        usingBlock:^(id value, NSRange range, BOOL *stop) {
+        if (value != nil) {
+            [ranges addObject:[NSValue valueWithRange:range]];
+        }
+    }];
+    return ranges;
+}
+
+- (void)updateBodyText {
+    NSString *text = self.message.text.length > 0 ? self.message.text : @"Nieobsługiwana wiadomość";
+    self.bodyLabel.attributedText = [self attributedTextForString:text
+                                                        entities:self.message.textEntities
+                                                        outgoing:self.message.isOutgoing
+                                                  revealSpoilers:self.bodySpoilersRevealed];
+    self.bodySpoilerRanges = [self spoilerRangesInAttributedString:self.bodyLabel.attributedText];
+}
+
+- (void)updateCaptionText {
+    if (self.message.mediaCaption.length == 0) {
+        self.captionLabel.attributedText = nil;
+        self.captionSpoilerRanges = @[];
+        return;
+    }
+    self.captionLabel.attributedText = [self attributedTextForString:self.message.mediaCaption
+                                                           entities:self.message.captionEntities
+                                                           outgoing:self.message.isOutgoing
+                                                     revealSpoilers:self.captionSpoilersRevealed];
+    self.captionSpoilerRanges = [self spoilerRangesInAttributedString:self.captionLabel.attributedText];
+}
+
+- (void)configureLinkPreviewForMessage:(TGMessage *)message client:(nullable TGTDLibClient *)client {
+    self.linkPreviewContainer.hidden = YES;
+    self.linkPreviewImageView.image = nil;
+    self.linkPreviewSiteLabel.text = nil;
+    self.linkPreviewTitleLabel.text = nil;
+    self.linkPreviewDescriptionLabel.text = nil;
+
+    if (message.messageType != TGMessageTypeText || !message.hasLinkPreview) {
+        return;
+    }
+
+    BOOL outgoing = message.isOutgoing;
+    self.linkPreviewContainer.backgroundColor = outgoing
+        ? [UIColor colorWithWhite:1.0 alpha:0.16]
+        : [UIColor colorWithWhite:0.0 alpha:0.06];
+    self.linkPreviewSiteLabel.textColor = outgoing
+        ? [[UIColor whiteColor] colorWithAlphaComponent:0.75]
+        : [TGTheme secondaryTextColor];
+    self.linkPreviewTitleLabel.textColor = outgoing ? [UIColor whiteColor] : [UIColor blackColor];
+    self.linkPreviewDescriptionLabel.textColor = outgoing
+        ? [[UIColor whiteColor] colorWithAlphaComponent:0.85]
+        : [TGTheme secondaryTextColor];
+
+    self.linkPreviewSiteLabel.text = [TGLinkPreviewSiteTextForMessage(message) uppercaseString];
+    self.linkPreviewTitleLabel.text = message.linkPreviewTitle;
+    self.linkPreviewDescriptionLabel.text = message.linkPreviewDescription;
+    self.linkPreviewContainer.hidden = NO;
+
+    BOOL hasImage = message.linkPreviewImageFileId > 0 || message.linkPreviewImageLocalPath.length > 0;
+    self.linkPreviewImageView.hidden = !hasImage;
+    if (!hasImage) {
+        return;
+    }
+
+    if (message.linkPreviewImageLocalPath.length > 0) {
+        UIImage *localImage = [UIImage imageWithContentsOfFile:message.linkPreviewImageLocalPath];
+        if (localImage != nil) {
+            self.linkPreviewImageView.image = localImage;
+            return;
+        }
+    }
+    if (client == nil || message.linkPreviewImageFileId <= 0) {
+        return;
+    }
+
+    NSString *cachedPath = [client localPathForFileId:message.linkPreviewImageFileId];
+    if (cachedPath.length > 0) {
+        UIImage *cachedImage = [UIImage imageWithContentsOfFile:cachedPath];
+        if (cachedImage != nil) {
+            self.linkPreviewImageView.image = cachedImage;
+        }
+    }
+
+    int32_t fileId = message.linkPreviewImageFileId;
+    int64_t messageId = message.messageId;
+    __weak typeof(self) weakSelf = self;
+    [client downloadFileWithId:fileId priority:16 completion:^(NSString *downloadedPath, NSDictionary *file) {
+        if (downloadedPath.length == 0) {
+            return;
+        }
+        UIImage *image = [UIImage imageWithContentsOfFile:downloadedPath];
+        if (image == nil) {
+            return;
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            TGMessageCell *cell = weakSelf;
+            if (cell == nil || cell.currentMessageId != messageId || cell.message.linkPreviewImageFileId != fileId) {
+                return;
+            }
+            cell.linkPreviewImageView.image = image;
+        });
+    }];
+}
+
+- (void)handleLinkPreviewTap {
+    NSString *urlString = self.message.linkPreviewURL;
+    if (urlString.length == 0) {
+        return;
+    }
+    NSString *normalized = urlString;
+    if ([normalized rangeOfString:@"://"].location == NSNotFound) {
+        normalized = [@"https://" stringByAppendingString:normalized];
+    }
+    NSURL *url = [NSURL URLWithString:normalized];
+    if (url != nil && self.onLinkTap != nil) {
+        self.onLinkTap(url);
+    }
 }
 
 - (void)configureAlbumForMessage:(TGMessage *)message client:(nullable TGTDLibClient *)client {
@@ -667,7 +992,7 @@ static const CGFloat TGMessageCellForwardLineHeight = 17.0;
 
     if (message.mediaCaption.length > 0) {
         self.captionLabel.hidden = NO;
-        self.captionLabel.attributedText = [self attributedTextForString:message.mediaCaption outgoing:message.isOutgoing];
+        [self updateCaptionText];
     } else {
         self.captionLabel.hidden = YES;
         self.captionLabel.attributedText = nil;
@@ -817,6 +1142,12 @@ static const CGFloat TGMessageCellForwardLineHeight = 17.0;
     _docTitleLabel.hidden = YES;
     _docSubtitleLabel.hidden = YES;
     _bodyLabel.hidden = YES;
+    _linkPreviewContainer.hidden = YES;
+    _linkPreviewImageView.image = nil;
+    self.bodySpoilersRevealed = NO;
+    self.captionSpoilersRevealed = NO;
+    self.bodySpoilerRanges = @[];
+    self.captionSpoilerRanges = @[];
 
     if (message.isAlbum) {
         _mediaContainer.hidden = NO;
@@ -830,14 +1161,14 @@ static const CGFloat TGMessageCellForwardLineHeight = 17.0;
         case TGMessageTypeText:
         case TGMessageTypeUnsupported: {
             _bodyLabel.hidden = NO;
-            _bodyLabel.attributedText = [self attributedTextForString:(message.text.length > 0 ? message.text : @"Nieobsługiwana wiadomość") outgoing:message.isOutgoing];
+            [self updateBodyText];
             break;
         }
         case TGMessageTypePhoto: {
             _mediaContainer.hidden = NO;
             if (message.mediaCaption.length > 0) {
                 _captionLabel.hidden = NO;
-                _captionLabel.attributedText = [self attributedTextForString:message.mediaCaption outgoing:message.isOutgoing];
+                [self updateCaptionText];
             }
             [self loadPhotoForMessage:message client:client];
             break;
@@ -848,7 +1179,7 @@ static const CGFloat TGMessageCellForwardLineHeight = 17.0;
             _mediaBadgeLabel.text = @" GIF ";
             if (message.mediaCaption.length > 0) {
                 _captionLabel.hidden = NO;
-                _captionLabel.attributedText = [self attributedTextForString:message.mediaCaption outgoing:message.isOutgoing];
+                [self updateCaptionText];
             }
             [self loadAnimationForMessage:message client:client];
             break;
@@ -862,7 +1193,7 @@ static const CGFloat TGMessageCellForwardLineHeight = 17.0;
             }
             if (message.mediaCaption.length > 0) {
                 _captionLabel.hidden = NO;
-                _captionLabel.attributedText = [self attributedTextForString:message.mediaCaption outgoing:message.isOutgoing];
+                [self updateCaptionText];
             }
             [self loadVideoForMessage:message client:client];
             break;
@@ -898,7 +1229,7 @@ static const CGFloat TGMessageCellForwardLineHeight = 17.0;
             _docSubtitleLabel.text = message.mediaFileSize > 0 ? TGDataSizeString(message.mediaFileSize) : @"Plik";
             if (message.mediaCaption.length > 0) {
                 _captionLabel.hidden = NO;
-                _captionLabel.attributedText = [self attributedTextForString:message.mediaCaption outgoing:message.isOutgoing];
+                [self updateCaptionText];
             }
             break;
         }
@@ -931,12 +1262,13 @@ static const CGFloat TGMessageCellForwardLineHeight = 17.0;
         }
         default: {
             _bodyLabel.hidden = NO;
-            _bodyLabel.attributedText = [self attributedTextForString:message.text outgoing:message.isOutgoing];
+            [self updateBodyText];
             break;
         }
     }
 
     [self configureReactionStrip];
+    [self configureLinkPreviewForMessage:message client:client];
     [self setNeedsLayout];
 }
 
@@ -1231,6 +1563,47 @@ static const CGFloat TGMessageCellForwardLineHeight = 17.0;
     return time;
 }
 
+#pragma mark - Link preview
+
+- (void)layoutLinkPreviewContents {
+    CGRect bounds = self.linkPreviewContainer.bounds;
+    CGFloat padding = TGMessageCellLinkPreviewPadding;
+    BOOL hasImage = !self.linkPreviewImageView.hidden;
+    CGFloat textX = padding;
+    CGFloat textWidth = bounds.size.width - padding * 2.0;
+
+    if (hasImage) {
+        CGFloat thumb = TGMessageCellLinkPreviewThumbSize;
+        self.linkPreviewImageView.frame = CGRectMake(bounds.size.width - padding - thumb,
+                                                     padding,
+                                                     thumb,
+                                                     thumb);
+        textWidth -= thumb + TGMessageCellLinkPreviewGap;
+    } else {
+        self.linkPreviewImageView.frame = CGRectZero;
+    }
+    textWidth = MAX(20.0, textWidth);
+
+    CGFloat y = padding;
+    CGFloat siteHeight = self.linkPreviewSiteLabel.text.length > 0 ? TGMessageCellLinkPreviewSiteHeight : 0.0;
+    self.linkPreviewSiteLabel.hidden = siteHeight <= 0.0;
+    self.linkPreviewSiteLabel.frame = CGRectMake(textX, y, textWidth, siteHeight);
+    if (siteHeight > 0.0) {
+        y += siteHeight + 1.0;
+    }
+
+    CGFloat titleHeight = TGMeasuredTextHeight(self.linkPreviewTitleLabel.text, TGLinkPreviewTitleFont(), textWidth, 2);
+    self.linkPreviewTitleLabel.hidden = titleHeight <= 0.0;
+    self.linkPreviewTitleLabel.frame = CGRectMake(textX, y, textWidth, titleHeight);
+    if (titleHeight > 0.0) {
+        y += titleHeight + 1.0;
+    }
+
+    CGFloat descriptionHeight = TGMeasuredTextHeight(self.linkPreviewDescriptionLabel.text, TGLinkPreviewDescriptionFont(), textWidth, 2);
+    self.linkPreviewDescriptionLabel.hidden = descriptionHeight <= 0.0;
+    self.linkPreviewDescriptionLabel.frame = CGRectMake(textX, y, textWidth, descriptionHeight);
+}
+
 #pragma mark - Layout
 
 - (void)layoutSubviews {
@@ -1323,10 +1696,20 @@ static const CGFloat TGMessageCellForwardLineHeight = 17.0;
     CGFloat contentWidth = 0.0;
 
     if (self.message.messageType == TGMessageTypeText || self.message.messageType == TGMessageTypeUnsupported) {
-        CGSize textSize = [[self class] textSizeForString:self.bodyLabel.text maxWidth:maxTextWidth];
+        CGSize textSize = [[self class] textSizeForAttributedString:self.bodyLabel.attributedText maxWidth:maxTextWidth];
         contentWidth = MAX(textSize.width, timeWidth);
         self.bodyLabel.frame = CGRectMake(TGMessageCellBubblePadding, curY, textSize.width, textSize.height);
         curY += textSize.height;
+
+        if (self.message.messageType == TGMessageTypeText && !self.linkPreviewContainer.hidden) {
+            CGFloat previewHeight = [[self class] linkPreviewHeightForMessage:self.message maxWidth:maxTextWidth];
+            CGFloat previewWidth = maxTextWidth;
+            curY += 6.0;
+            self.linkPreviewContainer.frame = CGRectMake(TGMessageCellBubblePadding, curY, previewWidth, previewHeight);
+            [self layoutLinkPreviewContents];
+            contentWidth = MAX(contentWidth, previewWidth);
+            curY += previewHeight;
+        }
     } else if (self.message.messageType == TGMessageTypePhoto ||
                self.message.messageType == TGMessageTypeVideo ||
                self.message.messageType == TGMessageTypeAnimation) {
@@ -1350,7 +1733,7 @@ static const CGFloat TGMessageCellForwardLineHeight = 17.0;
 
         if (self.message.mediaCaption.length > 0) {
             curY += 6.0;
-            CGSize capSize = [[self class] textSizeForString:self.message.mediaCaption maxWidth:maxTextWidth];
+            CGSize capSize = [[self class] textSizeForAttributedString:self.captionLabel.attributedText maxWidth:maxTextWidth];
             self.captionLabel.frame = CGRectMake(TGMessageCellBubblePadding, curY, capSize.width, capSize.height);
             contentWidth = MAX(contentWidth, capSize.width);
             curY += capSize.height;
@@ -1370,7 +1753,7 @@ static const CGFloat TGMessageCellForwardLineHeight = 17.0;
 
         if (self.message.mediaCaption.length > 0) {
             curY += 4.0;
-            CGSize capSize = [[self class] textSizeForString:self.message.mediaCaption maxWidth:maxTextWidth];
+            CGSize capSize = [[self class] textSizeForAttributedString:self.captionLabel.attributedText maxWidth:maxTextWidth];
             self.captionLabel.frame = CGRectMake(TGMessageCellBubblePadding, curY, capSize.width, capSize.height);
             contentWidth = MAX(contentWidth, capSize.width);
             curY += capSize.height;

@@ -1,5 +1,9 @@
 #import "TGTheme.h"
 
+#import "TGModels.h"
+
+NSAttributedStringKey const TGSpoilerAttributeName = @"TGSpoilerAttributeName";
+
 @implementation UIColor (TelegramX12)
 
 + (UIColor *)tg_colorWithHex:(uint32_t)hex {
@@ -200,6 +204,58 @@
                                            font:(UIFont *)font
                                           color:(UIColor *)color
                                       linkColor:(UIColor *)linkColor {
+    return [self attributedStringForText:text entities:nil font:font color:color linkColor:linkColor];
+}
+
++ (UIFont *)font:(UIFont *)font withAddedTraits:(UIFontDescriptorSymbolicTraits)traits {
+    if (font == nil) {
+        return font;
+    }
+    UIFontDescriptor *descriptor = font.fontDescriptor;
+    UIFontDescriptor *updated = [descriptor fontDescriptorWithSymbolicTraits:(descriptor.symbolicTraits | traits)];
+    if (updated == nil) {
+        return font;
+    }
+    return [UIFont fontWithDescriptor:updated size:font.pointSize];
+}
+
+/// Entities may nest (bold + italic, a link over code, …), so merge the traits
+/// into every font run inside the range instead of overwriting the font.
++ (void)addFontTraits:(UIFontDescriptorSymbolicTraits)traits
+       toAttributed:(NSMutableAttributedString *)attributed
+              range:(NSRange)range {
+    NSMutableArray<NSArray *> *runs = [NSMutableArray array];
+    [attributed enumerateAttribute:NSFontAttributeName
+                           inRange:range
+                           options:0
+                        usingBlock:^(id value, NSRange subrange, BOOL *stop) {
+        if ([value isKindOfClass:[UIFont class]]) {
+            [runs addObject:@[value, [NSValue valueWithRange:subrange]]];
+        }
+    }];
+    for (NSArray *run in runs) {
+        UIFont *font = run[0];
+        NSRange subrange = [run[1] rangeValue];
+        [attributed addAttribute:NSFontAttributeName
+                           value:[self font:font withAddedTraits:traits]
+                           range:subrange];
+    }
+}
+
++ (UIFont *)monospacedFontForFont:(UIFont *)font {
+    CGFloat size = font.pointSize * 0.94;
+    UIFont *monospaced = [UIFont fontWithName:@"Menlo-Regular" size:size];
+    if (monospaced == nil) {
+        monospaced = [UIFont fontWithName:@"Courier" size:size];
+    }
+    return monospaced ?: font;
+}
+
++ (NSAttributedString *)attributedStringForText:(NSString *)text
+                                       entities:(NSArray<NSDictionary *> *)entities
+                                           font:(UIFont *)font
+                                          color:(UIColor *)color
+                                      linkColor:(UIColor *)linkColor {
     if (text.length == 0) {
         return [[NSAttributedString alloc] initWithString:@""];
     }
@@ -228,6 +284,88 @@
                 NSLinkAttributeName: result.URL
             } range:result.range];
         }];
+    }
+
+    UIColor *spoilerBackground = [UIColor colorWithWhite:0.42 alpha:1.0];
+    UIColor *codeBackground = [color colorWithAlphaComponent:0.10];
+    for (NSDictionary *entity in entities) {
+        if (![entity isKindOfClass:[NSDictionary class]]) {
+            continue;
+        }
+        NSInteger offset = TGInt32Value(entity[@"offset"]);
+        NSInteger length = TGInt32Value(entity[@"length"]);
+        if (offset < 0 || length <= 0 || (NSUInteger)offset >= text.length) {
+            continue;
+        }
+        NSUInteger start = (NSUInteger)offset;
+        NSUInteger usable = text.length - start;
+        NSRange range = NSMakeRange(start, MIN((NSUInteger)length, usable));
+        NSDictionary *type = entity[@"type"];
+        NSString *typeName = [type isKindOfClass:[NSDictionary class]] ? TGStringValue(type[@"@type"]) : @"";
+
+        if ([typeName isEqualToString:@"textEntityTypeBold"]) {
+            [self addFontTraits:UIFontDescriptorTraitBold toAttributed:attributed range:range];
+        } else if ([typeName isEqualToString:@"textEntityTypeItalic"]) {
+            [self addFontTraits:UIFontDescriptorTraitItalic toAttributed:attributed range:range];
+        } else if ([typeName isEqualToString:@"textEntityTypeUnderline"]) {
+            [attributed addAttribute:NSUnderlineStyleAttributeName
+                               value:@(NSUnderlineStyleSingle)
+                               range:range];
+        } else if ([typeName isEqualToString:@"textEntityTypeStrikethrough"]) {
+            [attributed addAttribute:NSStrikethroughStyleAttributeName
+                               value:@(NSUnderlineStyleSingle)
+                               range:range];
+        } else if ([typeName isEqualToString:@"textEntityTypeCode"] ||
+                   [typeName isEqualToString:@"textEntityTypePre"] ||
+                   [typeName isEqualToString:@"textEntityTypePreCode"]) {
+            [attributed addAttributes:@{
+                NSFontAttributeName: [self monospacedFontForFont:font],
+                NSBackgroundColorAttributeName: codeBackground
+            } range:range];
+        } else if ([typeName isEqualToString:@"textEntityTypeSpoiler"]) {
+            [attributed addAttributes:@{
+                NSForegroundColorAttributeName: [UIColor clearColor],
+                NSBackgroundColorAttributeName: spoilerBackground,
+                TGSpoilerAttributeName: @YES
+            } range:range];
+        } else if ([typeName isEqualToString:@"textEntityTypeTextUrl"]) {
+            NSString *urlString = TGStringValue(type[@"url"]);
+            NSURL *url = urlString.length > 0 ? [NSURL URLWithString:urlString] : nil;
+            [attributed addAttributes:@{NSForegroundColorAttributeName: linkColor} range:range];
+            if (url != nil) {
+                [attributed addAttribute:NSLinkAttributeName value:url range:range];
+            }
+        } else if ([typeName isEqualToString:@"textEntityTypeUrl"] ||
+                   [typeName isEqualToString:@"textEntityTypeEmailAddress"] ||
+                   [typeName isEqualToString:@"textEntityTypePhoneNumber"]) {
+            NSString *value = [text substringWithRange:range];
+            NSString *scheme = [typeName isEqualToString:@"textEntityTypeEmailAddress"] ? @"mailto:"
+                             : ([typeName isEqualToString:@"textEntityTypePhoneNumber"] ? @"tel:" : @"");
+            NSString *target = [typeName isEqualToString:@"textEntityTypePhoneNumber"]
+                ? [value stringByReplacingOccurrencesOfString:@" " withString:@""]
+                : value;
+            NSURL *url = [NSURL URLWithString:[scheme stringByAppendingString:target]];
+            [attributed addAttributes:@{NSForegroundColorAttributeName: linkColor} range:range];
+            if (url != nil) {
+                [attributed addAttribute:NSLinkAttributeName value:url range:range];
+            }
+        } else if ([typeName isEqualToString:@"textEntityTypeMention"] ||
+                   [typeName isEqualToString:@"textEntityTypeHashtag"] ||
+                   [typeName isEqualToString:@"textEntityTypeCashtag"] ||
+                   [typeName isEqualToString:@"textEntityTypeBotCommand"] ||
+                   [typeName isEqualToString:@"textEntityTypeMentionName"]) {
+            [attributed addAttribute:NSForegroundColorAttributeName value:linkColor range:range];
+        } else if ([typeName isEqualToString:@"textEntityTypeBlockQuote"] ||
+                   [typeName isEqualToString:@"textEntityTypeExpandableBlockQuote"]) {
+            NSMutableParagraphStyle *style = [[NSMutableParagraphStyle alloc] init];
+            style.firstLineHeadIndent = 8.0;
+            style.headIndent = 8.0;
+            style.tailIndent = -2.0;
+            [attributed addAttributes:@{
+                NSParagraphStyleAttributeName: style,
+                NSForegroundColorAttributeName: [color colorWithAlphaComponent:0.82]
+            } range:range];
+        }
     }
     return attributed;
 }
