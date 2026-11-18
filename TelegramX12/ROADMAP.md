@@ -39,10 +39,10 @@ Priorytety: **P1** = bez tego codzienne używanie boli, **P2** = ważne, **P3** 
 
 ## 3. Powiadomienia (P1)
 
-- [ ] **Local notifications** — przy `updateNewMessage` gdy czat nieotwarty → `UNUserNotificationCenter` (dostępne od iOS 10) + dźwięk.
-- [ ] **Tap na powiadomienie** → otwarcie właściwego czatu.
-- [ ] **Wyciszanie czatów** — `chat.notification_settings` (`updateChatNotificationSettings`): nie budź z czatów wyciszonych.
-- [ ] **Badge ikony** = suma nieprzeczytanych (z `updateChatReadInbox`).
+- [x] **Local notifications** — przy `updateNewMessage` gdy czat nieotwarty → `UNUserNotificationCenter` (dostępne od iOS 10) + dźwięk.
+- [x] **Tap na powiadomienie** → otwarcie właściwego czatu.
+- [x] **Wyciszanie czatów** — `chat.notification_settings` (`updateChatNotificationSettings`): nie budź z czatów wyciszonych.
+- [x] **Badge ikony** = suma nieprzeczytanych (z `updateChatReadInbox`).
 
 ## 4. Trwałość i higiena (P2)
 

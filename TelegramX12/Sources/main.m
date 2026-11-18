@@ -16,14 +16,21 @@ static void TGWriteCrashRecord(NSString *title, NSString *body) {
     char stamp[40];
     strftime(stamp, sizeof(stamp), "%Y-%m-%d %H:%M:%S", &tmBuffer);
     NSString *record = [NSString stringWithFormat:@"%s crash: %@\n%@\n\n", stamp, title, body];
-    [record writeToFile:TGCrashLogPath()
-             atomically:NO
-               encoding:NSUTF8StringEncoding
-                  error:nil];
-    [record writeToFile:@"/tmp/TelegramX12-exception.log"
-             atomically:YES
-               encoding:NSUTF8StringEncoding
-                  error:nil];
+    NSLog(@"[CRASH] %@: %@", title, body);
+    NSData *data = [record dataUsingEncoding:NSUTF8StringEncoding];
+
+    void (^appendToFile)(NSString *) = ^(NSString *path) {
+        NSFileHandle *handle = [NSFileHandle fileHandleForWritingAtPath:path];
+        if (handle == nil) {
+            [data writeToFile:path atomically:YES];
+        } else {
+            [handle seekToEndOfFile];
+            [handle writeData:data];
+            [handle closeFile];
+        }
+    };
+    appendToFile(TGCrashLogPath());
+    appendToFile(@"/tmp/TelegramX12-exception.log");
 }
 
 static void TGUncaughtExceptionHandler(NSException *exception) {

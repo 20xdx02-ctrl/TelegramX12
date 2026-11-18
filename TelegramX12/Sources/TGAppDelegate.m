@@ -2,13 +2,14 @@
 #import "TGLog.h"
 #import "TGTheme.h"
 #import "TGTDLibClient.h"
+#import "TGNotificationManager.h"
 #import "TGChatViewController.h"
 #import "TGLoginViewController.h"
 #import "TGChatListViewController.h"
 #import "TGChatPlaceholderViewController.h"
 #import "TGModels.h"
 
-@interface TGAppDelegate () <TGTDLibClientDelegate>
+@interface TGAppDelegate () <TGTDLibClientDelegate, TGNotificationManagerDelegate>
 @property (nonatomic, strong) TGTDLibClient *client;
 @property (nonatomic, strong) UINavigationController *navigationController;
 @property (nonatomic, strong) UINavigationController *masterNavigation;
@@ -54,11 +55,19 @@
                TGLaunchElapsedMilliseconds(),
                cachedSession);
 
+    // Initialize notification manager and register delegate
+    [[TGNotificationManager sharedManager] setupWithClient:self.client];
+    [TGNotificationManager sharedManager].delegate = self;
+
     TGTDLibClient *client = self.client;
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         [client start];
     });
     return YES;
+}
+
+- (void)applicationDidBecomeActive:(UIApplication *)application {
+    [[TGNotificationManager sharedManager] updateAppBadge];
 }
 
 - (void)applicationWillTerminate:(UIApplication *)application {
@@ -341,10 +350,49 @@
 }
 
 - (void)tgClient:(TGTDLibClient *)client didReceiveUpdate:(NSDictionary *)update {
+    [[TGNotificationManager sharedManager] handleTDLibUpdate:update];
     for (UIViewController *vc in [self visibleUpdateTargets]) {
         if ([vc respondsToSelector:@selector(handleTDLibUpdate:)]) {
             [(id)vc handleTDLibUpdate:update];
         }
+    }
+}
+
+#pragma mark - TGNotificationManagerDelegate
+
+- (UIViewController *)currentlyVisibleChatViewController {
+    return [self currentlyOpenChat];
+}
+
+- (void)notificationManagerDidSelectChatId:(int64_t)chatId messageId:(int64_t)messageId {
+    [self openChatWithId:chatId title:nil];
+}
+
+- (void)openChatWithId:(int64_t)chatId title:(nullable NSString *)title {
+    if (chatId == 0) {
+        return;
+    }
+    if (title.length == 0) {
+        NSDictionary *chat = [self.client chatWithId:chatId];
+        title = TGStringValue(chat[@"title"]) ?: @"Czat";
+    }
+
+    TGChatViewController *current = [self currentlyOpenChat];
+    if (current != nil && current.chatId == chatId) {
+        return;
+    }
+
+    TGChatViewController *chatVC = [[TGChatViewController alloc] initWithClient:self.client chatId:chatId title:title];
+
+    if (self.splitViewController != nil) {
+        chatVC.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
+        UINavigationController *detail = [[UINavigationController alloc] initWithRootViewController:chatVC];
+        [self.splitViewController showDetailViewController:detail sender:nil];
+    } else if (self.masterNavigation != nil) {
+        if (self.masterNavigation.viewControllers.count > 1) {
+            [self.masterNavigation popToRootViewControllerAnimated:NO];
+        }
+        [self.masterNavigation pushViewController:chatVC animated:YES];
     }
 }
 
