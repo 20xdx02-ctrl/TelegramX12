@@ -1,6 +1,5 @@
 #import "TGCache.h"
 
-static NSInteger const TGCacheMaxChats = 100;
 static NSInteger const TGCacheMaxMessagesPerChat = 24;
 static NSInteger const TGCacheMaxRecentChats = 12;
 static NSInteger const TGCacheMaxAvatars = 400;
@@ -13,6 +12,7 @@ static NSInteger const TGCacheMaxAvatars = 400;
 @property (nonatomic) dispatch_queue_t cacheQueue;
 
 // All properties below are confined to `cacheQueue`.
+@property (nonatomic, strong) NSArray<NSDictionary *> *memoryCachedChats;
 @property (nonatomic, strong) NSData *pendingChatsData;
 @property (nonatomic) BOOL chatWriteScheduled;
 @property (nonatomic, strong) NSMutableArray<NSNumber *> *recentChatIds;
@@ -76,6 +76,10 @@ static NSInteger const TGCacheMaxAvatars = 400;
 - (NSArray<NSDictionary *> *)cachedChats {
     __block NSArray<NSDictionary *> *chats = @[];
     dispatch_sync(self.cacheQueue, ^{
+        if (self.memoryCachedChats != nil) {
+            chats = self.memoryCachedChats;
+            return;
+        }
         NSData *data = [NSData dataWithContentsOfFile:[self chatsPath]];
         if (data.length == 0) {
             return;
@@ -83,6 +87,7 @@ static NSInteger const TGCacheMaxAvatars = 400;
         id object = [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
         if ([object isKindOfClass:[NSArray class]]) {
             chats = (NSArray<NSDictionary *> *)object;
+            self.memoryCachedChats = chats;
         }
     });
     return chats;
@@ -92,14 +97,13 @@ static NSInteger const TGCacheMaxAvatars = 400;
     if (chats.count == 0 || ![NSJSONSerialization isValidJSONObject:chats]) {
         return;
     }
-    NSArray *limited = chats.count > TGCacheMaxChats
-        ? [chats subarrayWithRange:NSMakeRange(0, (NSUInteger)TGCacheMaxChats)]
-        : chats;
+    NSArray *limited = chats;
     NSData *data = [NSJSONSerialization dataWithJSONObject:limited options:0 error:NULL];
     if (data == nil) {
         return;
     }
     dispatch_async(self.cacheQueue, ^{
+        self.memoryCachedChats = limited;
         self.pendingChatsData = data;
         if (self.chatWriteScheduled) {
             return;

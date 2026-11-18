@@ -48,6 +48,10 @@ FOUNDATION_EXPORT NSString *TGDurationString(int32_t seconds);
 @property (nonatomic) BOOL hasMainListPosition;
 @property (nonatomic) BOOL isGroup;
 @property (nonatomic) BOOL isChannel;
+/// `permissions.can_send_basic_messages`; NO for read-only channels where only
+/// administrators may post. Defaults to YES for chats without a permissions
+/// object (private chats, legacy cache entries).
+@property (nonatomic) BOOL canSendMessages;
 @property (nonatomic) int64_t lastReadInboxMessageId;
 @property (nonatomic) int64_t lastReadOutboxMessageId;
 @property (nonatomic) BOOL isMuted;
@@ -89,6 +93,12 @@ FOUNDATION_EXPORT NSString *TGDurationString(int32_t seconds);
 @property (nonatomic) BOOL isDateDivider;
 @property (nonatomic) int64_t senderId;
 @property (nonatomic) BOOL senderIsUser;
+/// YES for posts in a channel (as opposed to a group/supergroup message).
+@property (nonatomic) BOOL isChannelPost;
+/// Optional signature shown above channel posts ("author_signature").
+@property (nonatomic, copy, nullable) NSString *authorSignature;
+/// `interaction_info.view_count` for channel posts (0 when unknown).
+@property (nonatomic) int32_t viewCount;
 @property (nonatomic, strong) NSDictionary *raw;
 
 // Reply / forward / edit metadata (M3)

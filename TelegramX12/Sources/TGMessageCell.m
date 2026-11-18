@@ -136,8 +136,9 @@ static CGFloat TGMeasuredTextHeight(NSString *text, UIFont *font, CGFloat width,
 
 + (BOOL)showsAuthorAvatarForMessage:(TGMessage *)message showSender:(BOOL)showSender {
     // Author avatar for every incoming message; showSender only controls the
-    // in-bubble name row (groups).
-    return !message.isOutgoing && !message.isService && !message.isUnreadDivider;
+    // in-bubble name row (groups). Channel posts are signed in the bubble and
+    // never show a per-message avatar.
+    return !message.isOutgoing && !message.isService && !message.isUnreadDivider && !message.isChannelPost;
 }
 
 /// Effective max bubble width, shrunk by the avatar column on the incoming
@@ -785,7 +786,9 @@ static CGFloat TGMeasuredTextHeight(NSString *text, UIFont *font, CGFloat width,
         return stickerSize.height + 12.0;
     }
 
-    CGFloat senderHeight = (showSender && !message.isOutgoing) ? TGMessageCellSenderHeight : 0.0;
+    BOOL showsSenderRow = (showSender && !message.isOutgoing) ||
+                          (message.isChannelPost && message.authorSignature.length > 0);
+    CGFloat senderHeight = showsSenderRow ? TGMessageCellSenderHeight : 0.0;
     CGFloat contentHeight = 0.0;
     if (message.messageType == TGMessageTypeText || message.messageType == TGMessageTypeUnsupported) {
         NSString *txt = message.text.length > 0 ? message.text : @"Nieobsługiwana wiadomość";
@@ -1084,11 +1087,14 @@ static CGFloat TGMeasuredTextHeight(NSString *text, UIFont *font, CGFloat width,
     _bodyLabel.textColor = message.isOutgoing ? [UIColor whiteColor] : [UIColor blackColor];
     _captionLabel.textColor = message.isOutgoing ? [UIColor whiteColor] : [UIColor blackColor];
     _timeLabel.textColor = message.isOutgoing ? [UIColor colorWithWhite:1.0 alpha:0.75] : [TGTheme secondaryTextColor];
-    _senderLabel.textColor = message.isOutgoing
-        ? [UIColor colorWithWhite:1.0 alpha:0.9]
-        : [TGTheme senderColorForIdentifier:message.senderId];
-    _senderLabel.text = senderName;
-    _senderLabel.hidden = !(showSender && !message.isOutgoing);
+    BOOL channelSignature = message.isChannelPost && message.authorSignature.length > 0;
+    _senderLabel.textColor = channelSignature
+        ? [TGTheme accentColor]
+        : (message.isOutgoing
+            ? [UIColor colorWithWhite:1.0 alpha:0.9]
+            : [TGTheme senderColorForIdentifier:message.senderId]);
+    _senderLabel.text = channelSignature ? message.authorSignature : senderName;
+    _senderLabel.hidden = ![self showsSenderRow];
     _timeLabel.text = [self timeTextForMessage:message];
 
     // Forward header ("Przekazano od …") and reply quote strip (M3).
@@ -1546,6 +1552,24 @@ static CGFloat TGMeasuredTextHeight(NSString *text, UIFont *font, CGFloat width,
     }
 }
 
+/// Compact view counter ("1.2K", "3.4M") used for channel posts.
+static NSString *TGCompactCountString(int32_t count) {
+    if (count >= 1000000) {
+        return [NSString stringWithFormat:@"%.1fM", count / 1000000.0];
+    }
+    if (count >= 1000) {
+        return [NSString stringWithFormat:@"%.1fK", count / 1000.0];
+    }
+    return [NSString stringWithFormat:@"%d", count];
+}
+
+- (BOOL)showsSenderRow {
+    if (self.message.isChannelPost && self.message.authorSignature.length > 0) {
+        return YES;
+    }
+    return self.showSender && !self.message.isOutgoing;
+}
+
 - (NSString *)timeTextForMessage:(TGMessage *)message {
     if (message.isFailed) {
         return @"Nie wysłano  ⚠️";
@@ -1553,6 +1577,9 @@ static CGFloat TGMeasuredTextHeight(NSString *text, UIFont *font, CGFloat width,
     NSString *time = [TGTheme timeStringForTimestamp:message.date];
     if (message.editDate > 0) {
         time = [time stringByAppendingString:@" · edytowano"];
+    }
+    if (message.isChannelPost && message.viewCount > 0) {
+        time = [NSString stringWithFormat:@"%@ · 👁 %@", time, TGCompactCountString(message.viewCount)];
     }
     if (message.isSending) {
         return [time stringByAppendingString:@"  ⏳"];
@@ -1688,7 +1715,7 @@ static CGFloat TGMeasuredTextHeight(NSString *text, UIFont *font, CGFloat width,
 
     // Normal bubble layout
     CGFloat maxTextWidth = MAX(60.0, maxBubbleWidth - TGMessageCellBubblePadding * 2.0);
-    CGFloat senderHeight = (self.showSender && !self.message.isOutgoing) ? TGMessageCellSenderHeight : 0.0;
+    CGFloat senderHeight = [self showsSenderRow] ? TGMessageCellSenderHeight : 0.0;
     CGFloat timeWidth = [self.timeLabel sizeThatFits:CGSizeMake(maxBubbleWidth, TGMessageCellTimeHeight)].width;
 
     CGFloat headerHeight = [[self class] replyBlockHeightForMessage:self.message];
@@ -1792,7 +1819,7 @@ static CGFloat TGMeasuredTextHeight(NSString *text, UIFont *font, CGFloat width,
                                                  TGMessageCellAvatarSize);
     }
 
-    if (self.showSender && !self.message.isOutgoing) {
+    if ([self showsSenderRow]) {
         self.senderLabel.frame = CGRectMake(TGMessageCellBubblePadding, 6.0 + headerHeight, bubbleWidth - TGMessageCellBubblePadding * 2.0, TGMessageCellSenderHeight);
     }
 

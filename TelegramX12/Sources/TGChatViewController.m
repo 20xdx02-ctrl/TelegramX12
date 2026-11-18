@@ -32,6 +32,14 @@
 @property (nonatomic) NSInteger typingRefreshGeneration;
 @property (nonatomic, strong) UITableView *tableView;
 @property (nonatomic, strong) TGInputBar *inputBar;
+/// Replaces the composer for read-only channels ("Tylko administratorzy…").
+@property (nonatomic, strong) UIView *readOnlyBar;
+@property (nonatomic, strong) UILabel *readOnlyLabel;
+@property (nonatomic) BOOL composerReadOnly;
+@property (nonatomic, strong) NSLayoutConstraint *readOnlyHeightConstraint;
+@property (nonatomic, strong) NSLayoutConstraint *tableBottomToReadOnlyConstraint;
+@property (nonatomic, strong) NSLayoutConstraint *scrollBottomToInputConstraint;
+@property (nonatomic, strong) NSLayoutConstraint *scrollBottomToReadOnlyConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *inputBottomConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *inputHeightConstraint;
 @property (nonatomic, strong, nullable) TGMessage *replyTargetMessage;
@@ -156,6 +164,28 @@
     };
     [self.view addSubview:self.inputBar];
 
+    // Shown instead of the composer in channels where we may not post.
+    self.readOnlyBar = [[UIView alloc] initWithFrame:CGRectZero];
+    self.readOnlyBar.translatesAutoresizingMaskIntoConstraints = NO;
+    self.readOnlyBar.backgroundColor = [TGTheme inputBackgroundColor];
+    self.readOnlyBar.hidden = YES;
+    [self.view addSubview:self.readOnlyBar];
+
+    self.readOnlyLabel = [[UILabel alloc] initWithFrame:CGRectZero];
+    self.readOnlyLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    self.readOnlyLabel.text = @"Tylko administratorzy mogą publikować";
+    self.readOnlyLabel.font = [TGTheme regularFontOfSize:14.0];
+    self.readOnlyLabel.textColor = [TGTheme secondaryTextColor];
+    self.readOnlyLabel.textAlignment = NSTextAlignmentCenter;
+    self.readOnlyLabel.adjustsFontSizeToFitWidth = YES;
+    self.readOnlyLabel.minimumScaleFactor = 0.8;
+    [self.readOnlyBar addSubview:self.readOnlyLabel];
+    [NSLayoutConstraint activateConstraints:@[
+        [self.readOnlyLabel.leadingAnchor constraintEqualToAnchor:self.readOnlyBar.leadingAnchor constant:16.0],
+        [self.readOnlyLabel.trailingAnchor constraintEqualToAnchor:self.readOnlyBar.trailingAnchor constant:-16.0],
+        [self.readOnlyLabel.centerYAnchor constraintEqualToAnchor:self.readOnlyBar.centerYAnchor]
+    ]];
+
     self.refreshControl = [[UIRefreshControl alloc] init];
     self.refreshControl.tintColor = [TGTheme accentColor];
     [self.refreshControl addTarget:self action:@selector(loadOlderHistory) forControlEvents:UIControlEventValueChanged];
@@ -180,17 +210,24 @@
     self.inputBottomConstraint = [self.inputBar.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor];
     self.inputHeightConstraint = [self.inputBar.heightAnchor constraintEqualToConstant:50.0];
     self.tableBottomToInputConstraint = [self.tableView.bottomAnchor constraintEqualToAnchor:self.inputBar.topAnchor];
+    self.tableBottomToReadOnlyConstraint = [self.tableView.bottomAnchor constraintEqualToAnchor:self.readOnlyBar.topAnchor];
+    self.readOnlyHeightConstraint = [self.readOnlyBar.heightAnchor constraintEqualToConstant:0.0];
+    self.tableBottomToInputConstraint.active = YES;
 
     [NSLayoutConstraint activateConstraints:@[
         [self.tableView.topAnchor constraintEqualToAnchor:safe.topAnchor],
         [self.tableView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [self.tableView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
-        self.tableBottomToInputConstraint,
 
         [self.inputBar.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [self.inputBar.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
         self.inputHeightConstraint,
         self.inputBottomConstraint,
+
+        [self.readOnlyBar.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [self.readOnlyBar.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [self.readOnlyBar.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor],
+        self.readOnlyHeightConstraint,
 
         [self.emptyLabel.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
         [self.emptyLabel.centerYAnchor constraintEqualToAnchor:self.view.centerYAnchor],
@@ -227,9 +264,12 @@
     [self.scrollToBottomButton addTarget:self action:@selector(scrollToBottomButtonTapped) forControlEvents:UIControlEventTouchUpInside];
     [self.view addSubview:self.scrollToBottomButton];
 
+    self.scrollBottomToInputConstraint = [self.scrollToBottomButton.bottomAnchor constraintEqualToAnchor:self.inputBar.topAnchor constant:-12.0];
+    self.scrollBottomToReadOnlyConstraint = [self.scrollToBottomButton.bottomAnchor constraintEqualToAnchor:self.readOnlyBar.topAnchor constant:-12.0];
+    self.scrollBottomToInputConstraint.active = YES;
+
     [NSLayoutConstraint activateConstraints:@[
         [self.scrollToBottomButton.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-16.0],
-        [self.scrollToBottomButton.bottomAnchor constraintEqualToAnchor:self.inputBar.topAnchor constant:-12.0],
         [self.scrollToBottomButton.widthAnchor constraintEqualToConstant:40.0],
         [self.scrollToBottomButton.heightAnchor constraintEqualToConstant:40.0],
     ]];
@@ -253,6 +293,7 @@
 
     [self.client openChat:self.chatId];
     [[TGCache sharedCache] markChatOpened:self.chatId];
+    [self updateComposerForChat];
     [self restoreCachedMessages];
     if (!self.didInitialLoad) {
         [self loadInitialHistory];
@@ -291,6 +332,52 @@
     } else {
         self.showSenderNames = NO;
     }
+}
+
+/// Read-only channels keep the conversation visible but replace the composer
+/// with an informational bar; sending is impossible there.
+- (void)updateComposerForChat {
+    NSDictionary *chat = [self.client chatWithId:self.chatId];
+    NSDictionary *permissions = chat[@"permissions"];
+    BOOL canSend = YES;
+    if ([permissions isKindOfClass:[NSDictionary class]] &&
+        permissions[@"can_send_basic_messages"] != nil) {
+        canSend = TGBoolValue(permissions[@"can_send_basic_messages"]);
+    }
+    [self applyComposerReadOnly:!canSend];
+}
+
+- (void)applyComposerReadOnly:(BOOL)readOnly {
+    if (self.composerReadOnly == readOnly) {
+        return;
+    }
+    self.composerReadOnly = readOnly;
+
+    if (readOnly) {
+        [self.inputBar.textField resignFirstResponder];
+        [self hideStickerPickerAnimated:NO];
+        self.inputBar.hidden = YES;
+        self.inputHeightConstraint.constant = 0.0;
+        self.readOnlyBar.hidden = NO;
+        self.readOnlyHeightConstraint.constant = 46.0;
+        self.tableBottomToInputConstraint.active = NO;
+        self.tableBottomToReadOnlyConstraint.active = YES;
+        self.scrollBottomToInputConstraint.active = NO;
+        self.scrollBottomToReadOnlyConstraint.active = YES;
+    } else {
+        self.inputBar.hidden = NO;
+        self.inputHeightConstraint.constant = self.inputBar.preferredHeight;
+        self.readOnlyBar.hidden = YES;
+        self.readOnlyHeightConstraint.constant = 0.0;
+        self.tableBottomToReadOnlyConstraint.active = NO;
+        self.tableBottomToInputConstraint.active = YES;
+        self.scrollBottomToReadOnlyConstraint.active = NO;
+        self.scrollBottomToInputConstraint.active = YES;
+    }
+    [self.view setNeedsLayout];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self scrollToBottomAnimated:NO];
+    });
 }
 
 #pragma mark - History
@@ -945,6 +1032,9 @@
 }
 
 - (void)updateInputBarHeightAnimated:(BOOL)animated {
+    if (self.composerReadOnly) {
+        return;
+    }
     CGFloat height = self.inputBar.preferredHeight;
     if (fabs(self.inputHeightConstraint.constant - height) < 0.5) {
         return;
@@ -1203,6 +1293,17 @@
         return;
     }
 
+    if ([type isEqualToString:@"updateChatPermissions"]) {
+        if (TGInt64Value(update[@"chat_id"]) == self.chatId) {
+            NSDictionary *permissions = update[@"permissions"];
+            if ([permissions isKindOfClass:[NSDictionary class]] &&
+                permissions[@"can_send_basic_messages"] != nil) {
+                [self applyComposerReadOnly:!TGBoolValue(permissions[@"can_send_basic_messages"])];
+            }
+        }
+        return;
+    }
+
     if ([type isEqualToString:@"updateChatReadOutbox"]) {
         if (TGInt64Value(update[@"chat_id"]) == self.chatId) {
             int64_t lastReadId = TGInt64Value(update[@"last_read_outbox_message_id"]);
@@ -1373,6 +1474,13 @@
                 return;
             }
         }
+    } else if ([typeName isEqualToString:@"chatTypeSupergroup"] && TGBoolValue(type[@"is_channel"])) {
+        int32_t count = TGInt32Value(chat[@"member_count"]);
+        self.subtitleHeaderLabel.text = count > 0
+            ? [NSString stringWithFormat:@"kanał · %d obserwujących", count]
+            : @"kanał";
+        self.subtitleHeaderLabel.textColor = [TGTheme secondaryTextColor];
+        return;
     } else if ([typeName isEqualToString:@"chatTypeBasicGroup"] || [typeName isEqualToString:@"chatTypeSupergroup"]) {
         int32_t count = TGInt32Value(chat[@"member_count"]);
         if (count > 0) {

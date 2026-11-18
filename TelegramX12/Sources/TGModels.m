@@ -374,6 +374,7 @@ NSString *TGMessagePreviewText(NSDictionary *content) {
     TGChat *chat = [[TGChat alloc] init];
     chat.title = @"";
     chat.lastMessageText = @"";
+    chat.canSendMessages = YES;
     [chat updateWithDictionary:dictionary];
     return chat;
 }
@@ -418,6 +419,14 @@ NSString *TGMessagePreviewText(NSDictionary *content) {
         self.isGroup = !isPrivate;
         self.isChannel = [typeName isEqualToString:@"chatTypeSupergroup"] &&
                          TGBoolValue(type[@"is_channel"]);
+    }
+
+    // Read-only channels (and restricted groups) report can_send_basic_messages
+    // = false. Keep the previous value when the update carries no permissions.
+    NSDictionary *permissions = dictionary[@"permissions"];
+    if ([permissions isKindOfClass:[NSDictionary class]] &&
+        permissions[@"can_send_basic_messages"] != nil) {
+        self.canSendMessages = TGBoolValue(permissions[@"can_send_basic_messages"]);
     }
 
     id positions = dictionary[@"positions"];
@@ -523,6 +532,10 @@ NSString *TGMessagePreviewText(NSDictionary *content) {
         @"mute_for": @(self.isMuted ? 31536000 : 0)
     };
     dictionary[@"type"] = chatType;
+    dictionary[@"permissions"] = @{
+        @"@type": @"chatPermissions",
+        @"can_send_basic_messages": @(self.canSendMessages)
+    };
     dictionary[@"positions"] = positions;
 
     if (self.lastMessageId != 0) {
@@ -603,6 +616,14 @@ NSString *TGMessagePreviewText(NSDictionary *content) {
     self.chatId = TGInt64Value(dictionary[@"chat_id"]);
     self.date = TGInt32Value(dictionary[@"date"]);
     self.isOutgoing = TGBoolValue(dictionary[@"is_outgoing"]);
+    self.isChannelPost = TGBoolValue(dictionary[@"is_channel_post"]);
+    self.authorSignature = TGStringValue(dictionary[@"author_signature"]);
+    NSDictionary *interaction = dictionary[@"interaction_info"];
+    if ([interaction isKindOfClass:[NSDictionary class]]) {
+        self.viewCount = TGInt32Value(interaction[@"view_count"]);
+    } else {
+        self.viewCount = 0;
+    }
 
     id content = dictionary[@"content"];
     if ([content isKindOfClass:[NSDictionary class]]) {

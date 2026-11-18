@@ -3,6 +3,7 @@
 #import "TGCache.h"
 #import "TGChatListCell.h"
 #import "TGLog.h"
+#import "TGNotificationManager.h"
 #import "TGChatPlaceholderViewController.h"
 #import "TGArchiveChatListViewController.h"
 #import "TGChatViewController.h"
@@ -38,6 +39,9 @@
 @property (nonatomic) BOOL loadingChats;
 @property (nonatomic) BOOL secondaryLoadsScheduled;
 @property (nonatomic) BOOL reloadScheduled;
+/// Signature of the last rendered list; when nothing relevant changed we skip
+/// the table reload (TDLib emits bursts of no-op updates on every launch).
+@property (nonatomic, copy, nullable) NSString *lastChatListSignature;
 @property (nonatomic) CFTimeInterval chatsLoadStart;
 @property (nonatomic) CFTimeInterval detailsLoadStart;
 @end
@@ -143,6 +147,7 @@
     }
     [self reloadUIImmediately];
     self.restoringCache = NO;
+    [[TGNotificationManager sharedManager] updateAppBadge];
     TGXLogLine(@"perf: restored %lu cached chats in %.0f ms (launch +%.0f ms)",
                (unsigned long)cached.count,
                (CACurrentMediaTime() - start) * 1000.0,
@@ -153,9 +158,15 @@
     if (self.restoringCache || self.chats.count == 0) {
         return;
     }
-    NSArray<TGChat *> *chats = self.chats.allValues;
-    NSMutableArray<NSDictionary *> *dictionaries = [NSMutableArray arrayWithCapacity:chats.count];
-    for (TGChat *chat in chats) {
+    // Persist the list in display order (pinned/order/date) so a cold start
+    // restores exactly the same first frame, not an arbitrary dictionary order.
+    NSMutableArray<NSDictionary *> *dictionaries = [NSMutableArray array];
+    for (TGChat *chat in self.sortedChats) {
+        if (chat.chatId != 0) {
+            [dictionaries addObject:[chat cacheDictionary]];
+        }
+    }
+    for (TGChat *chat in self.archivedChats) {
         if (chat.chatId != 0) {
             [dictionaries addObject:[chat cacheDictionary]];
         }
@@ -292,12 +303,19 @@
 }
 
 - (void)loadChats {
+    [self loadChatsForceReload:NO];
+}
+
+- (void)loadChatsForceReload:(BOOL)forceReload {
     if (self.loadingChats) {
         return;
     }
     self.loadingChats = YES;
     self.chatsLoadStart = CACurrentMediaTime();
-    [self.spinner startAnimating];
+    // Pokazuj spinner TYLKO jeśli nie mamy jeszcze żadnych czatów z cache!
+    if (self.chats.count == 0) {
+        [self.spinner startAnimating];
+    }
     self.emptyLabel.hidden = YES;
     __weak typeof(self) weakSelf = self;
     [self.client loadChatListWithCompletion:^(NSArray<NSNumber *> *chatIds, NSDictionary *error) {
@@ -317,9 +335,52 @@
                        (unsigned long)chatIds.count,
                        (CACurrentMediaTime() - weakSelf.chatsLoadStart) * 1000.0,
                        TGLaunchElapsedMilliseconds());
-            [weakSelf loadChatDictionaries:chatIds];
+            if (forceReload || weakSelf.chats.count == 0) {
+                [weakSelf loadChatDictionaries:chatIds];
+            } else {
+                [weakSelf verifyAndSyncChatsWithIds:chatIds];
+            }
         });
     }];
+}
+
+- (void)verifyAndSyncChatsWithIds:(NSArray<NSNumber *> *)chatIds {
+    if (chatIds.count == 0) {
+        [self reloadUI];
+        return;
+    }
+
+    // 1. Sprawdź, czy są jakieś nowe czaty z TDLib, których nie ma jeszcze w lokalnej pamięci (cache)
+    NSMutableArray<NSNumber *> *missingChatIds = [NSMutableArray array];
+    for (NSNumber *chatId in chatIds) {
+        if (self.chats[chatId] == nil) {
+            [missingChatIds addObject:chatId];
+        }
+    }
+
+    if (missingChatIds.count > 0) {
+        TGXLogLine(@"perf: %lu cached chats, loading %lu missing chats",
+                   (unsigned long)(chatIds.count - missingChatIds.count),
+                   (unsigned long)missingChatIds.count);
+        [self loadChatDictionaries:missingChatIds];
+    } else {
+        TGXLogLine(@"perf: all %lu chats restored from cache, verifying in background", (unsigned long)chatIds.count);
+    }
+
+    // 2. W tle zweryfikuj pierwsze 10 czatów pod kątem ewentualnych rozbieżności
+    NSUInteger verifyCount = MIN(chatIds.count, (NSUInteger)10);
+    NSArray<NSNumber *> *toVerify = [chatIds subarrayWithRange:NSMakeRange(0, verifyCount)];
+    __weak typeof(self) weakSelf = self;
+    for (NSNumber *chatId in toVerify) {
+        [self.client loadChat:chatId.longLongValue completion:^(NSDictionary *chat, NSDictionary *error) {
+            if (chat != nil) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [weakSelf mergeChatDictionary:chat];
+                    [weakSelf reloadUI];
+                });
+            }
+        }];
+    }
 }
 
 - (void)loadChatDictionaries:(NSArray<NSNumber *> *)chatIds {
@@ -351,7 +412,7 @@
 }
 
 - (void)refreshChats {
-    [self loadChats];
+    [self loadChatsForceReload:YES];
     [self.client loadMoreChatsWithCompletion:nil];
 }
 
@@ -409,6 +470,16 @@
             [chat applyPositions:positions];
         }
         [self reloadUI];
+        return;
+    }
+
+    if ([type isEqualToString:@"updateChatNotificationSettings"]) {
+        TGChat *chat = [self chatForUpdate:update];
+        NSDictionary *notif = update[@"notification_settings"];
+        if (chat != nil && [notif isKindOfClass:[NSDictionary class]]) {
+            chat.isMuted = !TGBoolValue(notif[@"use_default_mute_for"]) && (TGInt32Value(notif[@"mute_for"]) > 0);
+            [self reloadUI];
+        }
         return;
     }
 
@@ -519,8 +590,25 @@
     self.sortedChats = visible;
     [self applySearchFilter];
     self.emptyLabel.hidden = self.filteredChats.count > 0 || self.archivedChats.count > 0;
-    [self.tableView reloadData];
-    [self saveChatListCache];
+
+    // Full-list diff: only touch the table when something actually changed.
+    // Cached data is rendered first; the background sync then produces the
+    // same signature and costs zero reloads.
+    NSMutableString *signature = [NSMutableString stringWithCapacity:self.sortedChats.count * 48 + 16];
+    for (TGChat *chat in self.sortedChats) {
+        [signature appendFormat:@"%lld:%lld:%d:%d:%lld:%d:%d:%d:%d:%@:%@|",
+            chat.chatId, chat.order, chat.pinned ? 1 : 0, (int)chat.unreadCount,
+            chat.lastMessageId, chat.lastMessageDate, chat.lastMessageIsOutgoing ? 1 : 0,
+            chat.isMuted ? 1 : 0, chat.isChannel ? 1 : 0,
+            chat.title ?: @"", chat.lastMessageText ?: @""];
+    }
+    [signature appendFormat:@"#archive:%lu", (unsigned long)self.archivedChats.count];
+    BOOL forceReload = self.restoringCache || self.lastChatListSignature == nil;
+    if (forceReload || ![signature isEqualToString:self.lastChatListSignature]) {
+        self.lastChatListSignature = signature;
+        [self.tableView reloadData];
+        [self saveChatListCache];
+    }
 }
 
 - (void)applySearchFilter {
