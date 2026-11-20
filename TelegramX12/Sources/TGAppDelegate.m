@@ -8,6 +8,9 @@
 #import "TGChatListViewController.h"
 #import "TGChatPlaceholderViewController.h"
 #import "TGModels.h"
+#import "TGPhotoExport.h"
+
+#import <Photos/Photos.h>
 
 @interface TGAppDelegate () <TGTDLibClientDelegate, TGNotificationManagerDelegate>
 @property (nonatomic, strong) TGTDLibClient *client;
@@ -63,8 +66,87 @@
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         [client start];
     });
+    [self runPhotoDiagnosticIfRequested]; // TEMP-DIAG
     return YES;
 }
+
+#pragma mark - TEMP-DIAG
+
+- (void)runPhotoDiagnosticIfRequested {
+    NSString *flag = [[[NSProcessInfo processInfo] environment] objectForKey:@"TGX_PHOTO_SELFTEST"];
+    TGXLogLine(@"diag: TGX_PHOTO_SELFTEST=%@", flag ?: @"(unset)");
+    if (![flag boolValue]) {
+        return;
+    }
+    [self schedulePhotoDiagnosticAttempt:0];
+}
+
+- (void)schedulePhotoDiagnosticAttempt:(NSInteger)attempt {
+    if (!self.client.isReady) {
+        if (attempt > 30) {
+            TGXLogLine(@"diag: TDLib never became ready");
+            return;
+        }
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            [self schedulePhotoDiagnosticAttempt:attempt + 1];
+        });
+        return;
+    }
+    int64_t selfUserId = [self.client myUserId];
+    if (selfUserId == 0 && attempt <= 30) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            [self schedulePhotoDiagnosticAttempt:attempt + 1];
+        });
+        return;
+    }
+    [self runPhotoDiagnosticWithSelfUserId:selfUserId];
+}
+
+- (void)runPhotoDiagnosticWithSelfUserId:(int64_t)selfUserId {
+    TGXLogLine(@"diag: photo selftest start, self=%lld", selfUserId);
+    PHAuthorizationStatus status = [PHPhotoLibrary authorizationStatus];
+    TGXLogLine(@"diag: photo auth %ld", (long)status);
+    PHFetchOptions *options = [[PHFetchOptions alloc] init];
+    options.sortDescriptors = @[ [NSSortDescriptor sortDescriptorWithKey:@"creationDate" ascending:NO] ];
+    PHFetchResult<PHAsset *> *assets = [PHAsset fetchAssetsWithMediaType:PHAssetMediaTypeImage options:options];
+    TGXLogLine(@"diag: photo assets %lu", (unsigned long)assets.count);
+    if (assets.count == 0) {
+        return;
+    }
+    PHAsset *asset = assets.firstObject;
+    PHImageRequestOptions *requestOptions = [[PHImageRequestOptions alloc] init];
+    requestOptions.networkAccessAllowed = YES;
+    requestOptions.deliveryMode = PHImageRequestOptionsDeliveryModeHighQualityFormat;
+    __weak typeof(self) weakSelf = self;
+    [[PHImageManager defaultManager] requestImageDataForAsset:asset
+                                                     options:requestOptions
+                                               resultHandler:^(NSData *data, NSString *uti, UIImageOrientation orientation, NSDictionary *info) {
+        TGXLogLine(@"diag: raw %lu bytes uti=%@ info=%@", (unsigned long)data.length, uti, info);
+        NSData *jpeg = TGMaximumQualityJPEGForImageData(data, uti);
+        CGSize size = TGPhotoPixelSizeForImageData(jpeg);
+        TGXLogLine(@"diag: final %.0fx%.0f, %lu bytes", size.width, size.height, (unsigned long)jpeg.length);
+        if (jpeg.length == 0) {
+            return;
+        }
+        NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:@"diag_send.jpg"];
+        [jpeg writeToFile:path atomically:YES];
+        [weakSelf.client loadCanSendMessagesInChat:-1002152104342 completion:^(BOOL canSend, NSDictionary *error) {
+            TGXLogLine(@"diag: own channel canSend=%d error=%@", canSend, error);
+        }];
+        [weakSelf.client sendPhotoAtPath:path toChat:selfUserId caption:@"diag" completion:^(NSDictionary *message, NSDictionary *error) {
+            TGXLogLine(@"diag: send saved-messages id=%lld error=%@", TGInt64Value(message[@"id"]), error);
+            if (message != nil) {
+                int64_t messageId = TGInt64Value(message[@"id"]);
+                [weakSelf.client deleteMessages:@[@(messageId)] inChat:selfUserId revoke:YES completion:^(NSDictionary *deleteError) {
+                    TGXLogLine(@"diag: delete error=%@", deleteError);
+                }];
+            }
+        }];
+    }];
+}
+// TEMP-DIAG-END
 
 - (void)applicationDidBecomeActive:(UIApplication *)application {
     [[TGNotificationManager sharedManager] updateAppBadge];
