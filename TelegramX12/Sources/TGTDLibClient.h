@@ -65,6 +65,11 @@ replyToMessageId:(int64_t)replyToMessageId
                 inChat:(int64_t)chatId
                 revoke:(BOOL)revoke
             completion:(nullable void (^)(NSDictionary * _Nullable error))completion;
+/// Resolves whether the current account may post in `chatId`. For channels
+/// `chat.permissions` only describes regular subscribers, so the current
+/// member's status (creator/admin) has to be fetched with getChatMember.
+- (void)loadCanSendMessagesInChat:(int64_t)chatId
+                       completion:(nullable void (^)(BOOL canSend, NSDictionary * _Nullable error))completion;
 /// Forwards messages between chats (keeps the "Przekazano od" header).
 - (void)forwardMessages:(NSArray<NSNumber *> *)messageIds
                fromChat:(int64_t)fromChatId

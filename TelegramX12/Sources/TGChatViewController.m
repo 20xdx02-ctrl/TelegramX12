@@ -9,6 +9,7 @@
 #import "TGMessageCell.h"
 #import "TGMessageContextMenu.h"
 #import "TGModels.h"
+#import "TGPhotoExport.h"
 #import "TGPhotoViewerController.h"
 #import "TGStickerPickerView.h"
 #import "TGTDLibClient.h"
@@ -36,6 +37,9 @@
 @property (nonatomic, strong) UIView *readOnlyBar;
 @property (nonatomic, strong) UILabel *readOnlyLabel;
 @property (nonatomic) BOOL composerReadOnly;
+/// Incremented on every permission lookup so a late response for a previously
+/// opened chat cannot flip the composer of the current one.
+@property (nonatomic) NSUInteger composerRightsRequest;
 @property (nonatomic, strong) NSLayoutConstraint *readOnlyHeightConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *tableBottomToReadOnlyConstraint;
 @property (nonatomic, strong) NSLayoutConstraint *scrollBottomToInputConstraint;
@@ -335,16 +339,39 @@
 }
 
 /// Read-only channels keep the conversation visible but replace the composer
-/// with an informational bar; sending is impossible there.
+/// with an informational bar. Channels need a member lookup: chat.permissions
+/// only describes regular subscribers, while the channel's own administrators
+/// can post even though `can_send_basic_messages` is false for them.
 - (void)updateComposerForChat {
-    NSDictionary *chat = [self.client chatWithId:self.chatId];
+    int64_t chatId = self.chatId;
+    NSUInteger request = ++self.composerRightsRequest;
+
+    NSDictionary *chat = [self.client chatWithId:chatId];
     NSDictionary *permissions = chat[@"permissions"];
     BOOL canSend = YES;
     if ([permissions isKindOfClass:[NSDictionary class]] &&
         permissions[@"can_send_basic_messages"] != nil) {
         canSend = TGBoolValue(permissions[@"can_send_basic_messages"]);
     }
+    BOOL isChannel = TGBoolValue(chat[@"type"][@"is_channel"]);
+    self.inputBar.textField.placeholder = isChannel ? @"Opublikuj post" : @"Wiadomość";
     [self applyComposerReadOnly:!canSend];
+
+    __weak typeof(self) weakSelf = self;
+    [self.client loadCanSendMessagesInChat:chatId completion:^(BOOL allowed, NSDictionary *error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            TGChatViewController *strongSelf = weakSelf;
+            if (strongSelf == nil || strongSelf.chatId != chatId ||
+                strongSelf.composerRightsRequest != request) {
+                return;
+            }
+            if (error != nil) {
+                TGXLogLine(@"composer: cannot resolve posting rights for %lld: %@", chatId, error);
+                return;
+            }
+            [strongSelf applyComposerReadOnly:!allowed];
+        });
+    }];
 }
 
 - (void)applyComposerReadOnly:(BOOL)readOnly {
@@ -1295,10 +1322,21 @@
 
     if ([type isEqualToString:@"updateChatPermissions"]) {
         if (TGInt64Value(update[@"chat_id"]) == self.chatId) {
-            NSDictionary *permissions = update[@"permissions"];
-            if ([permissions isKindOfClass:[NSDictionary class]] &&
-                permissions[@"can_send_basic_messages"] != nil) {
-                [self applyComposerReadOnly:!TGBoolValue(permissions[@"can_send_basic_messages"])];
+            [self updateComposerForChat];
+        }
+        return;
+    }
+
+    if ([type isEqualToString:@"updateChatMember"]) {
+        if (TGInt64Value(update[@"chat_id"]) == self.chatId) {
+            NSDictionary *member = update[@"new_chat_member"];
+            NSDictionary *memberId = member[@"member_id"];
+            int64_t userId = [self.client myUserId];
+            BOOL isSelf = userId != 0 &&
+                          TGStringValue(memberId[@"@type"]).length > 0 &&
+                          TGInt64Value(memberId[@"user_id"]) == userId;
+            if (isSelf || userId == 0) {
+                [self updateComposerForChat];
             }
         }
         return;
@@ -1729,8 +1767,16 @@
 
     NSString *tmpDir = NSTemporaryDirectory();
     NSString *filePath = [tmpDir stringByAppendingPathComponent:[NSString stringWithFormat:@"send_%llu.jpg", (unsigned long long)(CACurrentMediaTime() * 1000.0)]];
-    NSData *data = UIImageJPEGRepresentation(image, 0.85);
+    NSData *data = TGMaximumQualityJPEGForImage(image);
     [data writeToFile:filePath atomically:YES];
+    TGXLogLine(@"camera: sending %.0fx%.0f photo, %lu bytes",
+               image.size.width * image.scale, image.size.height * image.scale,
+               (unsigned long)data.length);
+    // TDLib reads the local file while uploading, so keep it around.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * 60 * 60 * NSEC_PER_SEC)),
+                   dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_BACKGROUND, 0), ^{
+        [[NSFileManager defaultManager] removeItemAtPath:filePath error:NULL];
+    });
 
     __weak typeof(self) weakSelf = self;
     [self.client sendPhotoAtPath:filePath toChat:self.chatId caption:nil completion:^(NSDictionary *message, NSDictionary *error) {

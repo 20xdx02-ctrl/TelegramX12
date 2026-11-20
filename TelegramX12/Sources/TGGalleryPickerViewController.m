@@ -1,6 +1,7 @@
 #import "TGGalleryPickerViewController.h"
 
 #import "TGLog.h"
+#import "TGPhotoExport.h"
 #import "TGTheme.h"
 
 #import <Photos/Photos.h>
@@ -93,19 +94,6 @@
 @end
 
 static NSString *const TGGalleryCellIdentifier = @"TGGalleryCell";
-
-/// Re-encoding to JPEG drops EXIF orientation, so draw portrait/landscape
-/// originals upright first; otherwise camera photos arrive rotated.
-static UIImage *TGNormalizedImage(UIImage *image) {
-    if (image.imageOrientation == UIImageOrientationUp) {
-        return image;
-    }
-    UIGraphicsBeginImageContextWithOptions(image.size, NO, 1.0);
-    [image drawInRect:CGRectMake(0.0, 0.0, image.size.width, image.size.height)];
-    UIImage *normalized = UIGraphicsGetImageFromCurrentImageContext();
-    UIGraphicsEndImageContext();
-    return normalized ?: image;
-}
 
 @implementation TGGalleryPickerViewController
 
@@ -447,8 +435,8 @@ static UIImage *TGNormalizedImage(UIImage *image) {
             return;
         }
         finished = YES;
-        UIImage *image = data.length > 0 ? [UIImage imageWithData:data] : nil;
-        if (image != nil && [weakSelf appendJPEGForImage:image toPaths:paths]) {
+        NSData *jpeg = TGMaximumQualityJPEGForImageData(data, uti);
+        if (jpeg.length > 0 && [weakSelf appendJPEGData:jpeg toPaths:paths asset:asset]) {
             advance();
             return;
         }
@@ -494,7 +482,10 @@ static UIImage *TGNormalizedImage(UIImage *image) {
         }
         finished = YES;
         if (result != nil) {
-            [weakSelf appendJPEGForImage:result toPaths:paths];
+            NSData *jpeg = TGMaximumQualityJPEGForImage(result);
+            if (jpeg.length > 0) {
+                [weakSelf appendJPEGData:jpeg toPaths:paths asset:asset];
+            }
         } else {
             TGXLogLine(@"gallery: decoded image fetch failed for %@ info=%@", asset.localIdentifier, info);
         }
@@ -531,8 +522,9 @@ static UIImage *TGNormalizedImage(UIImage *image) {
     });
 }
 
-- (BOOL)appendJPEGForImage:(UIImage *)image toPaths:(NSMutableArray<NSString *> *)paths {
-    NSData *jpeg = UIImageJPEGRepresentation(TGNormalizedImage(image), 0.9);
+- (BOOL)appendJPEGData:(NSData *)jpeg
+               toPaths:(NSMutableArray<NSString *> *)paths
+                 asset:(PHAsset *)asset {
     if (jpeg.length == 0) {
         TGXLogLine(@"gallery: JPEG encoding produced no data");
         return NO;
@@ -545,6 +537,9 @@ static UIImage *TGNormalizedImage(UIImage *image) {
         TGXLogLine(@"gallery: failed to write %@", path);
         return NO;
     }
+    CGSize pixelSize = TGPhotoPixelSizeForImageData(jpeg);
+    TGXLogLine(@"gallery: exported %@ as %.0fx%.0f, %lu bytes",
+               asset.localIdentifier, pixelSize.width, pixelSize.height, (unsigned long)jpeg.length);
     [paths addObject:path];
     return YES;
 }

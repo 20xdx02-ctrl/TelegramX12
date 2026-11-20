@@ -1224,6 +1224,101 @@ static int32_t TGStickerFileId(NSDictionary *sticker) {
     return !([typeName isEqualToString:@"chatTypePrivate"] || [typeName isEqualToString:@"chatTypeSecret"]);
 }
 
+- (void)loadCanSendMessagesInChat:(int64_t)chatId
+                       completion:(void (^)(BOOL, NSDictionary *))completion {
+    void (^deliver)(BOOL, NSDictionary *) = ^(BOOL canSend, NSDictionary *error) {
+        if (completion != nil) {
+            completion(canSend, error);
+        }
+    };
+    NSDictionary *chat = self.chatCache[@(chatId)];
+    NSString *typeName = TGStringValue(chat[@"type"][@"@type"]);
+    if (chat == nil || typeName.length == 0) {
+        __weak typeof(self) weakSelf = self;
+        [self loadChat:chatId completion:^(NSDictionary *loaded, NSDictionary *error) {
+            if (loaded == nil) {
+                // A failed lookup must not lock the composer.
+                deliver(YES, error);
+                return;
+            }
+            [weakSelf resolveCanSendForChat:loaded completion:deliver];
+        }];
+        return;
+    }
+    [self resolveCanSendForChat:chat completion:deliver];
+}
+
+- (void)resolveCanSendForChat:(NSDictionary *)chat
+                   completion:(void (^)(BOOL, NSDictionary *))completion {
+    NSString *typeName = TGStringValue(chat[@"type"][@"@type"]);
+    if (![typeName isEqualToString:@"chatTypeSupergroup"]) {
+        // Private chats and basic groups: the local permissions object (when
+        // present) is already authoritative.
+        NSDictionary *permissions = chat[@"permissions"];
+        BOOL canSend = YES;
+        if ([permissions isKindOfClass:[NSDictionary class]] &&
+            permissions[@"can_send_basic_messages"] != nil) {
+            canSend = TGBoolValue(permissions[@"can_send_basic_messages"]);
+        }
+        completion(canSend, nil);
+        return;
+    }
+
+    BOOL isChannel = TGBoolValue(chat[@"type"][@"is_channel"]);
+    int64_t chatId = TGInt64Value(chat[@"id"]);
+    int64_t userId = [self myUserId];
+    if (userId == 0) {
+        __weak typeof(self) weakSelf = self;
+        [self sendRequest:@{@"@type": @"getMe"} completion:^(NSDictionary *response) {
+            if ([TGStringValue(response[@"@type"]) isEqualToString:@"user"]) {
+                weakSelf.selfUserId = TGInt64Value(response[@"id"]);
+                [weakSelf resolveCanSendForChat:chat completion:completion];
+            } else {
+                completion(YES, response);
+            }
+        }];
+        return;
+    }
+
+    NSDictionary *request = @{
+        @"@type": @"getChatMember",
+        @"chat_id": @(chatId),
+        @"member_id": @{
+            @"@type": @"messageSenderUser",
+            @"user_id": @(userId)
+        }
+    };
+    [self sendRequest:request completion:^(NSDictionary *response) {
+        if (![TGStringValue(response[@"@type"]) isEqualToString:@"chatMember"]) {
+            NSDictionary *permissions = chat[@"permissions"];
+            BOOL fallback = !isChannel ||
+                ([permissions isKindOfClass:[NSDictionary class]] &&
+                 TGBoolValue(permissions[@"can_send_basic_messages"]));
+            completion(fallback, response);
+            return;
+        }
+        NSDictionary *status = response[@"status"];
+        NSString *statusType = TGStringValue(status[@"@type"]);
+        BOOL canSend = NO;
+        if ([statusType isEqualToString:@"chatMemberStatusCreator"]) {
+            canSend = YES;
+        } else if ([statusType isEqualToString:@"chatMemberStatusAdministrator"]) {
+            NSDictionary *rights = status[@"rights"];
+            canSend = isChannel ? TGBoolValue(rights[@"can_post_messages"]) : YES;
+        } else if ([statusType isEqualToString:@"chatMemberStatusRestricted"]) {
+            canSend = TGBoolValue(status[@"permissions"][@"can_send_basic_messages"]);
+        } else if ([statusType isEqualToString:@"chatMemberStatusMember"] && !isChannel) {
+            NSDictionary *permissions = chat[@"permissions"];
+            canSend = ![permissions isKindOfClass:[NSDictionary class]] ||
+                      permissions[@"can_send_basic_messages"] == nil ||
+                      TGBoolValue(permissions[@"can_send_basic_messages"]);
+        }
+        TGXLogLine(@"composer: chat %lld status=%@ channel=%d canSend=%d",
+                   chatId, statusType, isChannel ? 1 : 0, canSend ? 1 : 0);
+        completion(canSend, nil);
+    }];
+}
+
 - (NSString *)displayNameForSender:(NSDictionary *)sender {
     if (![sender isKindOfClass:[NSDictionary class]]) {
         return @"Nieznany";
