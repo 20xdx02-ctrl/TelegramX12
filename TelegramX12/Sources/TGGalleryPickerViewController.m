@@ -1,5 +1,6 @@
 #import "TGGalleryPickerViewController.h"
 
+#import "TGLog.h"
 #import "TGTheme.h"
 
 #import <Photos/Photos.h>
@@ -10,6 +11,7 @@
 @property (nonatomic, strong) UIView *selectionBorder;
 @property (nonatomic, strong) UILabel *numberLabel;
 @property (nonatomic, copy, nullable) NSString *representedAssetId;
+@property (nonatomic) PHImageRequestID thumbnailRequestId;
 @end
 
 @implementation TGGalleryCell
@@ -55,10 +57,18 @@
 
 - (void)prepareForReuse {
     [super prepareForReuse];
+    [self cancelThumbnailRequest];
     self.thumbnailView.image = nil;
     self.representedAssetId = nil;
     self.selectionBorder.hidden = YES;
     self.numberLabel.hidden = YES;
+}
+
+- (void)cancelThumbnailRequest {
+    if (self.thumbnailRequestId != 0) {
+        [[PHImageManager defaultManager] cancelImageRequest:self.thumbnailRequestId];
+        self.thumbnailRequestId = 0;
+    }
 }
 
 - (void)setSelectedForSending:(BOOL)selected number:(NSInteger)number {
@@ -172,6 +182,7 @@ static UIImage *TGNormalizedImage(UIImage *image) {
 
 - (void)requestAccessAndLoadAssets {
     PHAuthorizationStatus status = [PHPhotoLibrary authorizationStatus];
+    TGXLogLine(@"gallery: photo authorization status %ld", (long)status);
     if (status == PHAuthorizationStatusAuthorized) {
         [self loadAssets];
         return;
@@ -180,6 +191,7 @@ static UIImage *TGNormalizedImage(UIImage *image) {
         [self.spinner startAnimating];
         __weak typeof(self) weakSelf = self;
         [PHPhotoLibrary requestAuthorization:^(PHAuthorizationStatus newStatus) {
+            TGXLogLine(@"gallery: photo authorization resolved to %ld", (long)newStatus);
             dispatch_async(dispatch_get_main_queue(), ^{
                 [weakSelf.spinner stopAnimating];
                 if (newStatus == PHAuthorizationStatusAuthorized) {
@@ -200,9 +212,17 @@ static UIImage *TGNormalizedImage(UIImage *image) {
 }
 
 - (void)loadAssets {
+    [self removeStaleExportFiles];
     PHFetchOptions *options = [[PHFetchOptions alloc] init];
     options.sortDescriptors = @[ [NSSortDescriptor sortDescriptorWithKey:@"creationDate" ascending:NO] ];
     self.assets = [PHAsset fetchAssetsWithMediaType:PHAssetMediaTypeImage options:options];
+    TGXLogLine(@"gallery: loaded %lu photo assets", (unsigned long)self.assets.count);
+    if (self.assets.count == 0) {
+        self.messageLabel.hidden = NO;
+        self.messageLabel.text = @"Brak zdjęć w bibliotece.";
+    } else {
+        self.messageLabel.hidden = YES;
+    }
     [self.collectionView reloadData];
 }
 
@@ -246,22 +266,77 @@ static UIImage *TGNormalizedImage(UIImage *image) {
 - (UICollectionViewCell *)collectionView:(UICollectionView *)collectionView cellForItemAtIndexPath:(NSIndexPath *)indexPath {
     TGGalleryCell *cell = [collectionView dequeueReusableCellWithReuseIdentifier:TGGalleryCellIdentifier forIndexPath:indexPath];
     PHAsset *asset = self.assets[(NSUInteger)indexPath.item];
-    cell.representedAssetId = asset.localIdentifier;
+    // Keep the identifier in a local: every call to -localIdentifier returns a
+    // fresh string instance, so pointer comparison against the cell's copy
+    // would always fail and leave the tile as an empty grey square.
+    NSString *assetIdentifier = asset.localIdentifier;
+    [cell cancelThumbnailRequest];
+    cell.representedAssetId = assetIdentifier;
     cell.thumbnailView.image = nil;
-    [cell setSelectedForSending:[self selectionPositionForIndex:indexPath.item] > 0
-                         number:[self selectionPositionForIndex:indexPath.item]];
+    NSInteger position = [self selectionPositionForIndex:indexPath.item];
+    [cell setSelectedForSending:position > 0 number:position];
 
+    CGSize targetSize = CGSizeMake(MAX(1.0, self.collectionLayout.itemSize.width * 2.0),
+                                   MAX(1.0, self.collectionLayout.itemSize.height * 2.0));
     __weak TGGalleryCell *weakCell = cell;
-    CGSize targetSize = CGSizeMake(self.collectionLayout.itemSize.width * 2.0, self.collectionLayout.itemSize.height * 2.0);
-    [[PHImageManager defaultManager] requestImageForAsset:asset
-                                               targetSize:targetSize
-                                              contentMode:PHImageContentModeAspectFill
-                                                  options:[self thumbnailOptions]
-                                            resultHandler:^(UIImage *result, NSDictionary *info) {
-        if (weakCell.representedAssetId == asset.localIdentifier) {
-            weakCell.thumbnailView.image = result;
+    __block BOOL retriedWithNetwork = NO;
+    PHImageRequestOptions *options = [self thumbnailOptions];
+
+    __block PHImageRequestID requestId = 0;
+    void (^applyResult)(UIImage *, NSDictionary *) = ^(UIImage *result, NSDictionary *info) {
+        if (result == nil) {
+            return;
         }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            TGGalleryCell *strongCell = weakCell;
+            if (strongCell == nil || ![strongCell.representedAssetId isEqualToString:assetIdentifier]) {
+                return;
+            }
+            strongCell.thumbnailView.image = result;
+        });
+    };
+
+    requestId = [[PHImageManager defaultManager] requestImageForAsset:asset
+                                                          targetSize:targetSize
+                                                         contentMode:PHImageContentModeAspectFill
+                                                             options:options
+                                                       resultHandler:^(UIImage *result, NSDictionary *info) {
+        if ([info[PHImageResultIsDegradedKey] boolValue]) {
+            // Low-quality pass: useful immediately, but keep the request alive
+            // for the full thumbnail.
+            applyResult(result, info);
+            return;
+        }
+        if (result != nil) {
+            applyResult(result, info);
+            return;
+        }
+        if (retriedWithNetwork) {
+            TGXLogLine(@"gallery: thumbnail failed for %@ info=%@", assetIdentifier, info);
+            return;
+        }
+        // iCloud-only originals: the fast, offline request returns nil. Retry
+        // once with network access instead of leaving the tile grey.
+        retriedWithNetwork = YES;
+        BOOL inCloud = [info[PHImageResultIsInCloudKey] boolValue];
+        PHImageRequestOptions *networkOptions = [self thumbnailOptions];
+        networkOptions.networkAccessAllowed = YES;
+        if (!inCloud) {
+            TGXLogLine(@"gallery: thumbnail nil for %@, retrying with network; info=%@", assetIdentifier, info);
+        }
+        requestId = [[PHImageManager defaultManager] requestImageForAsset:asset
+                                                              targetSize:targetSize
+                                                             contentMode:PHImageContentModeAspectFill
+                                                                 options:networkOptions
+                                                           resultHandler:^(UIImage *networkResult, NSDictionary *networkInfo) {
+            if (networkResult != nil) {
+                applyResult(networkResult, networkInfo);
+            } else if (![networkInfo[PHImageResultIsDegradedKey] boolValue]) {
+                TGXLogLine(@"gallery: thumbnail network fetch failed for %@ info=%@", assetIdentifier, networkInfo);
+            }
+        }];
     }];
+    cell.thumbnailRequestId = requestId;
     return cell;
 }
 
@@ -301,21 +376,27 @@ static UIImage *TGNormalizedImage(UIImage *image) {
             [assets addObject:self.assets[(NSUInteger)item]];
         }
     }
+    TGXLogLine(@"gallery: exporting %lu selected photos", (unsigned long)assets.count);
 
     __weak typeof(self) weakSelf = self;
     [self exportAssets:assets completion:^(NSArray<NSString *> *paths) {
+        TGXLogLine(@"gallery: export produced %lu/%lu files", (unsigned long)paths.count, (unsigned long)assets.count);
         dispatch_async(dispatch_get_main_queue(), ^{
-            [weakSelf.spinner stopAnimating];
-            void (^onSend)(NSArray<NSString *> *) = weakSelf.onSend;
-            if (paths.count == 0) {
-                weakSelf.sending = NO;
-                weakSelf.navigationItem.rightBarButtonItem.enabled = YES;
-                weakSelf.navigationItem.leftBarButtonItem.enabled = YES;
-                [weakSelf showAccessDeniedMessage];
-                weakSelf.messageLabel.text = @"Nie udało się odczytać wybranych zdjęć.";
+            TGGalleryPickerViewController *strongSelf = weakSelf;
+            if (strongSelf == nil) {
                 return;
             }
-            UIViewController *presenter = weakSelf.presentingViewController;
+            [strongSelf.spinner stopAnimating];
+            void (^onSend)(NSArray<NSString *> *) = strongSelf.onSend;
+            if (paths.count == 0) {
+                strongSelf.sending = NO;
+                strongSelf.navigationItem.rightBarButtonItem.enabled = YES;
+                strongSelf.navigationItem.leftBarButtonItem.enabled = YES;
+                strongSelf.messageLabel.hidden = NO;
+                strongSelf.messageLabel.text = @"Nie udało się odczytać wybranych zdjęć.";
+                return;
+            }
+            UIViewController *presenter = strongSelf.presentingViewController;
             [presenter dismissViewControllerAnimated:YES completion:^{
                 if (onSend != nil) {
                     onSend(paths);
@@ -326,47 +407,146 @@ static UIImage *TGNormalizedImage(UIImage *image) {
 }
 
 /// Converts selected assets to temporary JPEGs (HEIC and iCloud originals
-/// included), preserving the selection order.
+/// included), preserving the selection order. Photos requests are chained
+/// asynchronously: blocking a thread on a semaphore while the Photos framework
+/// wants to deliver on its own queue is what made exports come back empty.
 - (void)exportAssets:(NSArray<PHAsset *> *)assets completion:(void (^)(NSArray<NSString *> *paths))completion {
+    NSMutableArray<NSString *> *paths = [NSMutableArray array];
+    [self exportAssetAtIndex:0 assets:assets paths:paths completion:completion];
+}
+
+- (void)exportAssetAtIndex:(NSUInteger)index
+                    assets:(NSArray<PHAsset *> *)assets
+                     paths:(NSMutableArray<NSString *> *)paths
+                completion:(void (^)(NSArray<NSString *> *paths))completion {
+    if (index >= assets.count) {
+        completion(paths);
+        return;
+    }
+    PHAsset *asset = assets[index];
+    __weak typeof(self) weakSelf = self;
+    __block BOOL finished = NO;
+
+    void (^advance)(void) = ^{
+        [weakSelf exportAssetAtIndex:index + 1 assets:assets paths:paths completion:completion];
+    };
+
     PHImageRequestOptions *options = [[PHImageRequestOptions alloc] init];
     options.networkAccessAllowed = YES;
     options.deliveryMode = PHImageRequestOptionsDeliveryModeHighQualityFormat;
     options.resizeMode = PHImageRequestOptionsResizeModeNone;
     options.version = PHImageRequestOptionsVersionCurrent;
 
-    dispatch_queue_t exportQueue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
-    dispatch_async(exportQueue, ^{
-        NSMutableArray<NSString *> *paths = [NSMutableArray array];
-        for (PHAsset *asset in assets) {
-            @autoreleasepool {
-                __block NSData *imageData = nil;
-                dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
-                [[PHImageManager defaultManager] requestImageDataForAsset:asset
-                                                                  options:options
-                                                            resultHandler:^(NSData *data, NSString *uti, UIImageOrientation orientation, NSDictionary *info) {
-                    imageData = data;
-                    dispatch_semaphore_signal(semaphore);
-                }];
-                dispatch_semaphore_wait(semaphore, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(30.0 * NSEC_PER_SEC)));
-                UIImage *image = imageData.length > 0 ? [UIImage imageWithData:imageData] : nil;
-                if (image == nil) {
-                    continue;
-                }
-                NSData *jpeg = UIImageJPEGRepresentation(TGNormalizedImage(image), 0.9);
-                if (jpeg.length == 0) {
-                    continue;
-                }
-                NSString *fileName = [NSString stringWithFormat:@"send_%llu_%lu.jpg",
-                                      (unsigned long long)(CACurrentMediaTime() * 1000.0),
-                                      (unsigned long)paths.count];
-                NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:fileName];
-                if ([jpeg writeToFile:path atomically:YES]) {
-                    [paths addObject:path];
-                }
+    [[PHImageManager defaultManager] requestImageDataForAsset:asset
+                                                     options:options
+                                               resultHandler:^(NSData *data, NSString *uti, UIImageOrientation orientation, NSDictionary *info) {
+        if ([info[PHImageResultIsDegradedKey] boolValue]) {
+            return;
+        }
+        if (finished) {
+            return;
+        }
+        finished = YES;
+        UIImage *image = data.length > 0 ? [UIImage imageWithData:data] : nil;
+        if (image != nil && [weakSelf appendJPEGForImage:image toPaths:paths]) {
+            advance();
+            return;
+        }
+        TGXLogLine(@"gallery: no image data for %@ (%lu bytes), info=%@",
+                   asset.localIdentifier, (unsigned long)data.length, info);
+        // Some assets (HEIC, edited or iCloud-only) come back without raw data;
+        // ask for a decoded full-size image instead.
+        [weakSelf exportDecodedImageForAsset:asset paths:paths completion:^{
+            advance();
+        }];
+    }];
+
+    // A Photos request that never calls back must not wedge the whole export.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(60.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (!finished) {
+            finished = YES;
+            TGXLogLine(@"gallery: export timed out for %@", asset.localIdentifier);
+            advance();
+        }
+    });
+}
+
+- (void)exportDecodedImageForAsset:(PHAsset *)asset
+                             paths:(NSMutableArray<NSString *> *)paths
+                        completion:(void (^)(void))completion {
+    PHImageRequestOptions *options = [[PHImageRequestOptions alloc] init];
+    options.networkAccessAllowed = YES;
+    options.deliveryMode = PHImageRequestOptionsDeliveryModeHighQualityFormat;
+    options.version = PHImageRequestOptionsVersionCurrent;
+
+    __weak typeof(self) weakSelf = self;
+    __block BOOL finished = NO;
+    [[PHImageManager defaultManager] requestImageForAsset:asset
+                                               targetSize:PHImageManagerMaximumSize
+                                              contentMode:PHImageContentModeDefault
+                                                  options:options
+                                            resultHandler:^(UIImage *result, NSDictionary *info) {
+        if ([info[PHImageResultIsDegradedKey] boolValue]) {
+            return;
+        }
+        if (finished) {
+            return;
+        }
+        finished = YES;
+        if (result != nil) {
+            [weakSelf appendJPEGForImage:result toPaths:paths];
+        } else {
+            TGXLogLine(@"gallery: decoded image fetch failed for %@ info=%@", asset.localIdentifier, info);
+        }
+        completion();
+    }];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(60.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (!finished) {
+            finished = YES;
+            TGXLogLine(@"gallery: decoded image fetch timed out for %@", asset.localIdentifier);
+            completion();
+        }
+    });
+}
+
+/// Temporary JPEGs live for two hours because TDLib may still be uploading
+/// them; clean leftovers from earlier sessions when the picker opens.
+- (void)removeStaleExportFiles {
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_BACKGROUND, 0), ^{
+        NSFileManager *fileManager = [NSFileManager defaultManager];
+        NSString *directory = NSTemporaryDirectory();
+        NSArray<NSString *> *names = [fileManager contentsOfDirectoryAtPath:directory error:NULL];
+        NSDate *cutoff = [NSDate dateWithTimeIntervalSinceNow:-24.0 * 60.0 * 60.0];
+        for (NSString *name in names) {
+            if (![name hasPrefix:@"send_"] || ![name hasSuffix:@".jpg"]) {
+                continue;
+            }
+            NSString *path = [directory stringByAppendingPathComponent:name];
+            NSDictionary *attributes = [fileManager attributesOfItemAtPath:path error:NULL];
+            NSDate *modified = attributes[NSFileModificationDate];
+            if (modified != nil && [modified compare:cutoff] == NSOrderedAscending) {
+                [fileManager removeItemAtPath:path error:NULL];
             }
         }
-        completion(paths);
     });
+}
+
+- (BOOL)appendJPEGForImage:(UIImage *)image toPaths:(NSMutableArray<NSString *> *)paths {
+    NSData *jpeg = UIImageJPEGRepresentation(TGNormalizedImage(image), 0.9);
+    if (jpeg.length == 0) {
+        TGXLogLine(@"gallery: JPEG encoding produced no data");
+        return NO;
+    }
+    NSString *fileName = [NSString stringWithFormat:@"send_%llu_%lu.jpg",
+                          (unsigned long long)(CACurrentMediaTime() * 1000.0),
+                          (unsigned long)paths.count];
+    NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:fileName];
+    if (![jpeg writeToFile:path atomically:YES]) {
+        TGXLogLine(@"gallery: failed to write %@", path);
+        return NO;
+    }
+    [paths addObject:path];
+    return YES;
 }
 
 @end

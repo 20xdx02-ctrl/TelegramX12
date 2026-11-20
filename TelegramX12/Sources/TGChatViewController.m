@@ -1563,9 +1563,15 @@
         dispatch_async(dispatch_get_main_queue(), ^{
             weakSelf.sendingPhotos = NO;
             [weakSelf.spinner stopAnimating];
-            for (NSString *path in paths) {
-                [[NSFileManager defaultManager] removeItemAtPath:path error:NULL];
-            }
+            // TDLib answers sendMessage before the upload finishes and still
+            // reads the local file during upload, so the temporary JPEGs must
+            // stay around for a while.
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * 60 * 60 * NSEC_PER_SEC)),
+                           dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_BACKGROUND, 0), ^{
+                for (NSString *path in paths) {
+                    [[NSFileManager defaultManager] removeItemAtPath:path error:NULL];
+                }
+            });
             if (messages.count == 0) {
                 NSString *messageText = TGStringValue(error[@"message"]);
                 if (messageText.length == 0) {

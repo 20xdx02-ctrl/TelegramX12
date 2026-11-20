@@ -5,6 +5,7 @@
 #import "TGTheme.h"
 
 #import <UIKit/UIKit.h>
+#import <ImageIO/ImageIO.h>
 
 #import "td_json_client.h"
 
@@ -172,6 +173,13 @@ static NSDictionary *TGDictionaryFromRaw(const char *raw) {
 #pragma mark - Receive handling
 
 - (void)handleObject:(NSDictionary *)dictionary {
+    NSString *type = TGStringValue(dictionary[@"@type"]);
+    if ([type isEqualToString:@"error"]) {
+        // Errors used to be invisible once the first 60 updates had been
+        // logged; keep every failed request in app.log for diagnostics.
+        TGXLogLine(@"tdlib error: %@", dictionary);
+    }
+
     NSString *extra = dictionary[@"@extra"];
     if ([extra isKindOfClass:[NSString class]]) {
         TGResponseBlock completion = self.completions[extra];
@@ -181,8 +189,6 @@ static NSDictionary *TGDictionaryFromRaw(const char *raw) {
             return;
         }
     }
-
-    NSString *type = TGStringValue(dictionary[@"@type"]);
 
     if ([type isEqualToString:@"updateAuthorizationState"]) {
         NSDictionary *state = dictionary[@"authorization_state"];
@@ -380,11 +386,18 @@ static NSDictionary *TGDictionaryFromRaw(const char *raw) {
     }
 
     NSString *json = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-    if ([TGStringValue(request[@"@type"]) isEqualToString:@"setTdlibParameters"]) {
+    NSString *requestType = TGStringValue(request[@"@type"]);
+    BOOL logsPayload = [requestType isEqualToString:@"setTdlibParameters"] ||
+                       [requestType isEqualToString:@"sendMessage"] ||
+                       [requestType isEqualToString:@"sendMessageAlbum"];
+    if (logsPayload) {
         NSMutableDictionary *redacted = [payload mutableCopy];
-        redacted[@"api_hash"] = @"***";
+        if (redacted[@"api_hash"] != nil) {
+            redacted[@"api_hash"] = @"***";
+        }
         NSData *redactedData = [NSJSONSerialization dataWithJSONObject:redacted options:0 error:NULL];
-        TGXLogLine(@"send: %@", [[NSString alloc] initWithData:redactedData encoding:NSUTF8StringEncoding]);
+        TGXLogLine(@"send %@: %@", requestType,
+                   [[NSString alloc] initWithData:redactedData encoding:NSUTF8StringEncoding]);
     }
     if (json.length == 0) {
         if (completion != nil) {
@@ -695,24 +708,51 @@ replyToMessageId:(int64_t)replyToMessageId
     }];
 }
 
+static CGSize TGImagePixelSizeAtPath(NSString *path) {
+    CGSize size = CGSizeZero;
+    if (path.length == 0) {
+        return size;
+    }
+    NSURL *url = [NSURL fileURLWithPath:path];
+    CGImageSourceRef source = CGImageSourceCreateWithURL((__bridge CFURLRef)url, NULL);
+    if (source == NULL) {
+        return size;
+    }
+    NSDictionary *properties = CFBridgingRelease(CGImageSourceCopyPropertiesAtIndex(source, 0, NULL));
+    CFRelease(source);
+    if ([properties isKindOfClass:[NSDictionary class]]) {
+        size.width = [properties[(NSString *)kCGImagePropertyPixelWidth] doubleValue];
+        size.height = [properties[(NSString *)kCGImagePropertyPixelHeight] doubleValue];
+    }
+    return size;
+}
+
 static NSDictionary *TGInputMessagePhoto(NSString *path, NSString *caption) {
+    // This TDLib wraps the file in an inputPhoto struct that also carries the
+    // pixel size (a bare inputFileLocal is rejected with
+    // "InputFile is not specified").
+    CGSize pixelSize = TGImagePixelSizeAtPath(path);
+    int32_t width = (int32_t)MAX(1.0, MIN(100000.0, round(pixelSize.width)));
+    int32_t height = (int32_t)MAX(1.0, MIN(100000.0, round(pixelSize.height)));
     return @{
         @"@type": @"inputMessagePhoto",
-        // TDLib 1.8 wraps the file in an inputPhoto struct: a bare
-        // inputFileLocal is ignored ("InputFile is not specified").
         @"photo": @{
             @"@type": @"inputPhoto",
             @"photo": @{
                 @"@type": @"inputFileLocal",
                 @"path": path
             },
-            @"added_sticker_file_ids": @[]
+            @"added_sticker_file_ids": @[],
+            @"width": @(width),
+            @"height": @(height)
         },
         @"caption": @{
             @"@type": @"formattedText",
             @"text": caption ?: @"",
             @"entities": @[]
-        }
+        },
+        @"show_caption_above_media": @NO,
+        @"has_spoiler": @NO
     };
 }
 

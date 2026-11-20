@@ -7,7 +7,7 @@ include $(THEOS)/makefiles/common.mk
 APPLICATION_NAME = TelegramX12
 
 TelegramX12_FILES = $(wildcard Sources/*.m) Sources/compat.c
-TelegramX12_FRAMEWORKS = UIKit Foundation CoreGraphics QuartzCore AVFoundation AVKit CoreMedia Photos UserNotifications
+TelegramX12_FRAMEWORKS = UIKit Foundation CoreGraphics QuartzCore AVFoundation AVKit CoreMedia Photos UserNotifications ImageIO
 TelegramX12_RESOURCE_FILES = Info.plist
 TelegramX12_RESOURCE_DIRS = Resources
 
